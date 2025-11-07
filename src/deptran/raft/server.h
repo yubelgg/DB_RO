@@ -10,248 +10,112 @@ namespace janus {
 class Command;
 class CmdData;
 
-#define INVALID_SITEID  ((siteid_t)-1)
-#define NUM_BATCH_TIMER_RESET  (100)
-#define SEC_BATCH_TIMER_RESET  (1)
+#define HEARTBEAT_INTERVAL 150000
 
-struct RaftData {
-  ballot_t max_ballot_seen_ = 0;
-  ballot_t max_ballot_accepted_ = 0;
-  shared_ptr<Marshallable> accepted_cmd_{nullptr};
-  shared_ptr<Marshallable> committed_cmd_{nullptr};
-
-  ballot_t term;
-  shared_ptr<Marshallable> log_{nullptr};
-
-	//for retries
-	ballot_t prevTerm;
-	slotid_t slot_id;
-	ballot_t ballot;
+// Clean Raft log entry structure
+struct LogEntry {
+  uint64_t term;
+  shared_ptr<Marshallable> command;
 };
 
-struct KeyValue {
-	int key;
-	i32 value;
-};
+struct LogEntryRPC;
 
-#define HEARTBEAT_INTERVAL 100000
+enum ServerState { FOLLOWER, CANDIDATE, LEADER };
 
 class RaftServer : public TxLogServer {
- private:
-  std::map<siteid_t, uint64_t> match_index_{};
-  std::map<siteid_t, uint64_t> next_index_{};
-  std::vector<std::thread> timer_threads_ = {};
-  void timer_thread(bool *vote) ;
-  Timer *timer_;
-  uint64_t last_heartbeat_time_ = 0;
-  bool stop_ = false ;
-  siteid_t vote_for_ = INVALID_SITEID ;
-  bool init_ = false ;
-  bool is_leader_ = false ;
-  slotid_t snapidx_ = 0 ;
-  ballot_t snapterm_ = 0 ;
-  int32_t wait_int_ = 100000 ;
+private:
+  // Core Raft state
+  uint64_t current_term_ = 0;
+  int64_t voted_for_ = -1;
+  vector<LogEntry> log_;
+
+  uint64_t commited_index_ = 0;
+  uint64_t last_applied_ = 0;
+
+  // Leader state
+  vector<uint64_t> next_index_;
+  vector<uint64_t> match_index_;
+  vector<siteid_t> follower_ids_;
+
+  ServerState state_ = FOLLOWER;
+  uint64_t last_election_reset_ = 0;
+  int votes_received_ = 0;
+  set<uint64_t> voted_by_;
+  size_t cluster_size_ = 0;
+
+  // Infrastructure for target compatibility
   bool disconnected_ = false;
-  bool req_voting_ = false ;
-  bool in_applying_logs_ = false ;
-#ifdef RAFT_TEST_CORO
-  bool failover_{true} ;
-#else
-  bool failover_{false} ;
-#endif
-  atomic<int64_t> counter_{0};
-  const char *filename = "/db/data.txt";
 
-  bool looping_ = false;
-  bool heartbeat_ = true;
-	enum { STOPPED, RUNNING } status_;
-  
-	bool RequestVote() ;
+  // Internal Raft logic methods
+  void HandleRequestVoteLogic(uint64_t term, uint64_t candidate_id,
+                              uint64_t last_log_index, uint64_t last_log_term,
+                              ballot_t *ret_term, bool_t *vote_granted);
 
-	void HeartbeatLoop() ;
-  RaftCommo* commo() {
-    return (RaftCommo*) commo_;
-  } 
-	void setIsLeader(bool isLeader);
+  void HandleAppendEntriesLogic(uint64_t term, uint64_t leader_id,
+                                uint64_t prev_log_index, uint64_t prev_log_term,
+                                const vector<LogEntryRPC> &entries,
+                                uint64_t leader_commit, uint64_t *ret_term,
+                                bool_t *followerAppendOK);
 
-  void doVote(const slotid_t& lst_log_idx,
-              const ballot_t& lst_log_term,
-              const siteid_t& can_id,
-              const ballot_t& can_term,
-              ballot_t *reply_term,
-              bool_t *vote_granted,
-              bool_t vote,
-              const function<void()> &cb) {
-      *vote_granted = vote ;
-      *reply_term = currentTerm ;
-      Log_debug("loc %d vote decision %d, for can_id %d canterm %d curterm %d isleader %d lst_log_idx %d lst_log_term %d", 
-            loc_id_, vote, can_id, can_term, currentTerm, is_leader_, lst_log_idx, lst_log_term );
-                    
-      if( can_term > currentTerm)
-      {
-          // is_leader_ = false ;  // TODO recheck
-          currentTerm = can_term ;
-      }
+  // Election functions
+  void StartElection();
+  void SendRequestVoteRPCs();
+  void BecomeLeader();
+  void ResetElectionTimeout();
+  uint64_t GetRandomElectionTimeout();
+  uint64_t TimeSinceLastReset();
+  uint64_t GetCurrentTime();
 
-      if(vote)
-      {
-          setIsLeader(false) ;
-          vote_for_ = can_id ;
-          //reset timeout
-          resetTimer() ;
-      }
-      n_vote_++ ;
-      cb() ;
-  }
+  // Heartbeat functions
+  void SendHeartbeats();
+  void StartHeartbeatTimer();
 
-  void applyLogs();
-
-  void resetTimerBatch()
-  {
-    if (!failover_) return ;
-    auto cur_count = counter_++;
-    if (cur_count > NUM_BATCH_TIMER_RESET ) {
-      if (timer_->elapsed() > SEC_BATCH_TIMER_RESET) {
-        resetTimer();
-      }
-      counter_.store(0);
-    }
-  }
-
-  void resetTimer() {
-    // Log_info("site %d resetting timer", site_id_);
-    last_heartbeat_time_ = Time::now();
-    if (failover_) {
-      timer_->start() ;
-    }
-  }
-
-  double randDuration() 
-  {
-    // election timeout between 0.4 and 0.7 seconds
-    return RandomGenerator::rand_double(0.4, 0.7) ;
-  }
- public:
-  slotid_t min_active_slot_ = 1; // anything before (lt) this slot is freed
-  slotid_t max_executed_slot_ = 0;
-  slotid_t max_committed_slot_ = 0;
-  map<slotid_t, shared_ptr<RaftData>> logs_{};
-  int n_vote_ = 0;
-  int n_prepare_ = 0;
-  int n_accept_ = 0;
-  int n_commit_ = 0;
-
-  /* NOTE: I think I should move these to the RaftData class */
-  /* TODO: talk to Shuai about it */
-  uint64_t lastLogIndex = 0;
-  uint64_t currentTerm = 0;
-  uint64_t commitIndex = 0;
-  uint64_t executeIndex = 0;
-  map<slotid_t, shared_ptr<RaftData>> raft_logs_{};
-//  vector<shared_ptr<RaftData>> raft_logs_{};
+  // Log replication functions
+  void SendAppendEntriesToFollower(siteid_t server_id, size_t follower_idx);
+  void AdvanceCommitIndex();
+  void ApplyCommittedEntries();
 
   void Setup();
-  void StartElectionTimer() ;
-  void SyncRpcExample();
 
-  bool IsLeader()
-  {
-    return is_leader_ ;
+  RaftCommo* commo() {
+    return (RaftCommo*) commo_;
   }
 
-  bool Start(shared_ptr<Marshallable> &cmd, uint64_t *index, uint64_t *term, slotid_t slot_id = -1, ballot_t ballot = 1);
+public:
+  RaftServer(Frame *frame);
+  ~RaftServer();
+
+  // Client interface
+  bool Start(shared_ptr<Marshallable> &cmd, uint64_t *index, uint64_t *term,
+             slotid_t slot_id = -1, ballot_t ballot = 1);
 
   void GetState(bool *is_leader, uint64_t *term) {
     std::lock_guard<std::recursive_mutex> lock(mtx_);
-    *is_leader = IsLeader();
-    *term = currentTerm;
+    *is_leader = (state_ == LEADER);
+    *term = current_term_;
   }
 
-  void SetLocalAppend(shared_ptr<Marshallable>& cmd, uint64_t* term, uint64_t* index, slotid_t slot_id = -1, ballot_t ballot = 1 ){
-    std::lock_guard<std::recursive_mutex> lock(mtx_);
-    *index = lastLogIndex ;
-    lastLogIndex += 1;
-    auto instance = GetRaftInstance(lastLogIndex);
-    instance->log_ = cmd;
-		instance->prevTerm = currentTerm;
-    instance->term = currentTerm;
-		instance->slot_id = slot_id;
-		instance->ballot = ballot;
-
-#ifndef RAFT_TEST_CORO
-    if (cmd->kind_ == MarshallDeputy::CMD_TPC_COMMIT){
-      auto p_cmd = dynamic_pointer_cast<TpcCommitCommand>(cmd);
-      auto sp_vec_piece = dynamic_pointer_cast<VecPieceData>(p_cmd->cmd_)->sp_vec_piece_data_;
-			vector<struct KeyValue> kv_vector;
-			int index = 0;
-			for (auto it = sp_vec_piece->begin(); it != sp_vec_piece->end(); it++){
-				auto cmd_input = (*it)->input.values_;
-				for (auto it2 = cmd_input->begin(); it2 != cmd_input->end(); it2++) {
-					struct KeyValue key_value = {it2->first, it2->second.get_i32()};
-					kv_vector.push_back(key_value);
-				}
-			}
-
-			struct KeyValue key_values[kv_vector.size()];
-			std::copy(kv_vector.begin(), kv_vector.end(), key_values);
-
-			// auto de = IO::write(filename, key_values, sizeof(struct KeyValue), kv_vector.size());
-
-			struct timespec begin, end;
-			//clock_gettime(CLOCK_MONOTONIC, &begin);
-      // de->Wait();
-			//clock_gettime(CLOCK_MONOTONIC, &end);
-			//Log_info("Time of Write: %d", end.tv_nsec - begin.tv_nsec);
-    } else {
-			int value = -1;
-			int value_;
-			// auto de = IO::write(filename, &value, sizeof(int), 1);
-			struct timespec begin, end;
-			//clock_gettime(CLOCK_MONOTONIC, &begin);
-      // de->Wait();
-			//clock_gettime(CLOCK_MONOTONIC, &end);
-			//Log_info("Time of Write: %d", end.tv_nsec - begin.tv_nsec);
-    }
-#endif
-    *term = currentTerm ;
-  }
-  
-  shared_ptr<RaftData> GetInstance(slotid_t id) {
-    verify(id >= min_active_slot_ || lastLogIndex == 0);
-    auto& sp_instance = logs_[id];
-    if(!sp_instance)
-      sp_instance = std::make_shared<RaftData>();
-    return sp_instance;
+  bool IsLeader() {
+    return state_ == LEADER;
   }
 
- /* shared_ptr<RaftData> GetRaftInstance(slotid_t id) {
-    if ( id <= raft_logs_.size() )
-    {
-        return raft_logs_[id-1] ;
-    }
-    auto sp_instance = std::make_shared<RaftData>();
-    raft_logs_.push_back(sp_instance) ;
-    return sp_instance;
-  }*/
-   shared_ptr<RaftData> GetRaftInstance(slotid_t id) {
-    verify(id >= min_active_slot_ || id == 0);
-     auto& sp_instance = raft_logs_[id];
-     if(!sp_instance)
-       sp_instance = std::make_shared<RaftData>();
-     return sp_instance;
-   }
+  // Public getters for coordinator access
+  uint64_t commitIndex() const {
+    return commited_index_;
+  }
 
+  uint64_t currentTerm() const {
+    return current_term_;
+  }
 
-  RaftServer(Frame *frame) ;
-  ~RaftServer() ;
-
+  // RPC handlers - adapted to target's callback interface
   void OnRequestVote(const slotid_t& lst_log_idx,
                      const ballot_t& lst_log_term,
                      const siteid_t& can_id,
                      const ballot_t& can_term,
                      ballot_t *reply_term,
                      bool_t *vote_granted,
-                     const function<void()> &cb) ;
+                     const function<void()> &cb);
 
   void OnAppendEntries(const slotid_t slot_id,
                        const ballot_t ballot,
@@ -266,21 +130,21 @@ class RaftServer : public TxLogServer {
                        uint64_t *followerLastLogIndex,
                        const function<void()> &cb);
 
+  // Network simulation support
   void Disconnect(const bool disconnect = true);
-
   void Reconnect() {
     Disconnect(false);
-    resetTimer() ;
+    ResetElectionTimeout();
   }
-
   bool IsDisconnected();
 
+  // Required by base class
   virtual bool HandleConflicts(Tx& dtxn,
                                innid_t inn_id,
                                vector<string>& conflicts) {
     verify(0);
   };
 
-  void removeCmd(slotid_t slot);
+  void SyncRpcExample();
 };
 } // namespace janus

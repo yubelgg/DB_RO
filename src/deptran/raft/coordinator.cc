@@ -51,9 +51,9 @@ void CoordinatorRaft::AppendEntries() {
     bool ok = this->svr_->Start(cmd_, &index, &term); // slot_id_, curr_ballot_);
     verify(ok);
 
-    while (this->svr_->commitIndex < index) {
+    while (this->svr_->commitIndex() < index) {
       Reactor::CreateSpEvent<TimeoutEvent>(1000)->Wait();
-      verify(this->svr_->currentTerm == term);
+      verify(this->svr_->currentTerm() == term);
     }
     committed_ = true;
 }

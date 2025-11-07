@@ -1,5 +1,10 @@
 namespace janus;
 
+struct LogEntryRPC {
+  uint64_t term;
+  MarshallDeputy command;
+};
+
 abstract service Raft {
 
   defer Vote(uint64_t lst_log_idx,

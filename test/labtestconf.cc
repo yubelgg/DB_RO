@@ -280,7 +280,7 @@ shared_ptr<CommitIndex> RaftTestConfig::StartAgreement(int svr, int cmd) {
       Log_debug("Starting agreement for cmd id %d", cmdptr->tx_id_);
       auto cmdptr_m = dynamic_pointer_cast<Marshallable>(cmdptr);
       RaftTestConfig::frames[svr]->svr_->CreateRepCoord(0)->Submit(cmdptr_m, [svr, cmt_idx_p](){
-        cmt_idx_p->setval(RaftTestConfig::frames[svr]->svr_->commitIndex);
+        cmt_idx_p->setval(RaftTestConfig::frames[svr]->svr_->commitIndex());
       });
     }
   );

@@ -202,6 +202,95 @@ Benchmarks are in `src/bench/`. Each benchmark has:
 - Use Google perftools (linked automatically)
 - Profile with `perf record` and analyze with `perf report`
 
+## Platform-Specific Installation Notes
+
+### Arch Linux
+
+The project now supports Arch Linux in addition to Debian/Ubuntu. Use `pacman_packages.sh` for installation:
+
+```bash
+sudo bash pacman_packages.sh
+pip install -r requirements.txt
+```
+
+#### Key Differences from Debian
+- **Package naming**: `base-devel` instead of `build-essential`, `the_silver_searcher` instead of `silversearcher-ag`
+- **Development headers**: Included with base packages (no separate `-dev` packages)
+- **LLVM/Clang versions**: Uses latest from rolling release (currently 17+) instead of LLVM 14
+- **Python**: Python 3 is default; Python 2 deprecated (available via AUR if needed: `yay -S python2`)
+- **System libraries**: `systemd-libs` provides both `libsystemd` and `libudev` functionality
+- **Cgroup support**: Built into systemd (no separate `libcgroup` package needed)
+- **PMDK**: Not available in official repos (only AUR), not required for lab tests
+- **Boost 1.89**: `boost_system` is header-only (removed as compiled library), CMakeLists.txt updated accordingly
+
+#### Arch Linux Package Mapping
+| Debian Package | Arch Equivalent | Notes |
+|----------------|-----------------|-------|
+| `build-essential` | `base-devel` | |
+| `libboost-all-dev` | `boost` + `boost-libs` | boost_system is header-only |
+| `silversearcher-ag` | `the_silver_searcher` | |
+| `libgoogle-perftools-dev` | `gperftools` | |
+| `libibverbs-dev` | `rdma-core` | |
+| `libsystemd-dev` + `libudev-dev` | `systemd-libs` | |
+| `cgroup-tools` / `libcgroup-dev` | Built into systemd | No separate package |
+| `libpmem-dev` / `pmdk` | Not included | AUR only, not needed for labs |
+| `ifmetric` | Not included | Use iproute2 for route metrics |
+
+### Optional Dependencies (All Platforms)
+
+#### Python 2 (Deprecated)
+Python 2 is largely removed from the codebase. Only install if absolutely necessary:
+- **Debian**: `sudo apt-get install python2`
+- **Arch**: `yay -S python2` (AUR package)
+
+#### RDMA-Core (for InfiniBand/RDMA Support)
+If you need InfiniBand or RDMA support, build from source:
+```bash
+git clone https://github.com/linux-rdma/rdma-core
+cd rdma-core
+bash build.sh
+cmake .
+sudo make install -j10
+```
+
+#### eRPC (High-Performance RPC Framework)
+For high-performance networking with DPDK support:
+```bash
+git clone https://github.com/shenweihai1/eRPC.git
+cd eRPC
+cmake . -DTRANSPORT=dpdk -DAZURE=on -DPERF=ON
+make -j32
+make latency
+```
+
+#### Rust 1.80.0 (Specific Version for RustyCpp)
+The project uses Rust 1.80.0 for borrow checking. Install via rustup:
+```bash
+rustup install 1.80.0
+rustup default 1.80.0
+```
+
+Or manually:
+```bash
+curl -LO https://static.rust-lang.org/dist/rust-1.80.0-x86_64-unknown-linux-gnu.tar.gz
+tar xzf rust-1.80.0-x86_64-unknown-linux-gnu.tar.gz
+cd rust-1.80.0-x86_64-unknown-linux-gnu/
+./install.sh --prefix=$HOME/.local-rust
+```
+
+#### DPDK 19.11.5 (Specific Version for eRPC)
+If you need the exact DPDK version for eRPC with Mellanox NICs:
+```bash
+wget http://static.dpdk.org/rel/dpdk-19.11.5.tar.gz
+tar -xvf dpdk-19.11.5.tar.gz
+cd dpdk-stable-19.11.5
+make config T=x86_64-native-linuxapp-gcc
+# Enable MLX4/MLX5 PMD for Mellanox NICs
+sed -ri 's,(MLX._PMD=)n,\1y,' build/.config
+make -j32
+sudo make install T=x86_64-native-linuxapp-gcc DESTDIR=/usr -j32
+```
+
 ## Raft Lab Testing
 
 ### Build and Test Commands

@@ -42,13 +42,18 @@ endif()
 # enable_borrow_checking()
 
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(DPDK REQUIRED libdpdk)
+
+# DPDK is only needed for Mako/eRPC, not for lab tests
+if(NOT BUILD_RAFT_LAB_TESTS)
+    pkg_check_modules(DPDK REQUIRED libdpdk)
+endif()
 
 # Find Python for txlog library
 find_package(Python3 COMPONENTS Development REQUIRED)
 
 # Find Boost libraries for txlog library
-find_package(Boost REQUIRED COMPONENTS system filesystem thread coroutine context serialization)
+# Note: boost_system is header-only in Boost 1.69+ (removed as a compiled library)
+find_package(Boost REQUIRED COMPONENTS filesystem thread coroutine context serialization)
 
 # Define paths
 set(mkfile_path "${CMAKE_CURRENT_SOURCE_DIR}/CMakeLists.txt")
@@ -131,71 +136,73 @@ else()
   message(STATUS "Skipping eRPC build (not needed for lab tests)")
 endif()
 
-# eRPC flags
-set(ERPC_CFLAGS_DPDK
-  -Isrc/mako
-  -I${ERPC_PATH}/src
-  -DERPC_DPDK=true
-  -march=native
-  # ${DPDK_CXXFLAGS} 
-  -DERPC_LOG_LEVEL=6
-  -DERPC_TESTING=false
-  -DGFLAGS_IS_A_DLL=0
-)
-set(ERPC_LDFLAGS_DPDK
-  -Wl,--whole-archive
-  ${DPDK_LDFLAGS} 
-  -Wl,--no-whole-archive
-  -lpthread
-  -lnuma
-  -ldl
-  -lgflags
-  -libverbs
-  -lmlx4
-  -lmlx5
-)
-set(ERPC_CFLAGS_IB
-  -Isrc/mako
-  -I${ERPC_PATH}/src
-  -DERPC_INFINIBAND=true
-  -march=native
-  -DERPC_LOG_LEVEL=6
-  -DERPC_TESTING=false
-  -DGFLAGS_IS_A_DLL=0
-)
-set(ERPC_LDFLAGS_IB
-  -Wl,--whole-archive 
-  ${DPDK_LDFLAGS} 
-  -Wl,--no-whole-archive
-  -lpthread
-  -lnuma
-  -ldl
-  -lgflags
-  -libverbs
-  -lmlx4
-  -lmlx5
-)
-set(ERPC_CFLAGS_ETH
-  -Isrc/mako
-  -I${ERPC_PATH}/src
-  -DERPC_FAKE=true
-  -march=native
-  -DERPC_LOG_LEVEL=6
-  -DERPC_TESTING=false
-  -DGFLAGS_IS_A_DLL=0
-)
-set(ERPC_LDFLAGS_ETH
-  -Wl,--whole-archive 
-  ${DPDK_LDFLAGS} 
-  -Wl,--no-whole-archive
-  -lpthread
-  -lnuma
-  -ldl
-  -lgflags
-  #-libverbs
-  #-lmlx4
-  #-lmlx5
-)
+# eRPC flags (only needed when not building lab tests)
+if(NOT BUILD_RAFT_LAB_TESTS)
+  set(ERPC_CFLAGS_DPDK
+    -Isrc/mako
+    -I${ERPC_PATH}/src
+    -DERPC_DPDK=true
+    -march=native
+    # ${DPDK_CXXFLAGS}
+    -DERPC_LOG_LEVEL=6
+    -DERPC_TESTING=false
+    -DGFLAGS_IS_A_DLL=0
+  )
+  set(ERPC_LDFLAGS_DPDK
+    -Wl,--whole-archive
+    ${DPDK_LDFLAGS}
+    -Wl,--no-whole-archive
+    -lpthread
+    -lnuma
+    -ldl
+    -lgflags
+    -libverbs
+    -lmlx4
+    -lmlx5
+  )
+  set(ERPC_CFLAGS_IB
+    -Isrc/mako
+    -I${ERPC_PATH}/src
+    -DERPC_INFINIBAND=true
+    -march=native
+    -DERPC_LOG_LEVEL=6
+    -DERPC_TESTING=false
+    -DGFLAGS_IS_A_DLL=0
+  )
+  set(ERPC_LDFLAGS_IB
+    -Wl,--whole-archive
+    ${DPDK_LDFLAGS}
+    -Wl,--no-whole-archive
+    -lpthread
+    -lnuma
+    -ldl
+    -lgflags
+    -libverbs
+    -lmlx4
+    -lmlx5
+  )
+  set(ERPC_CFLAGS_ETH
+    -Isrc/mako
+    -I${ERPC_PATH}/src
+    -DERPC_FAKE=true
+    -march=native
+    -DERPC_LOG_LEVEL=6
+    -DERPC_TESTING=false
+    -DGFLAGS_IS_A_DLL=0
+  )
+  set(ERPC_LDFLAGS_ETH
+    -Wl,--whole-archive
+    ${DPDK_LDFLAGS}
+    -Wl,--no-whole-archive
+    -lpthread
+    -lnuma
+    -ldl
+    -lgflags
+    #-libverbs
+    #-lmlx4
+    #-lmlx5
+  )
+endif()
 
 # Options
 option(DEBUG "Enable debug mode" OFF)
@@ -290,15 +297,18 @@ set(CXXFLAGS
   -I${CMAKE_CURRENT_SOURCE_DIR}/third-party/lz4
   -Isrc
   -I${HOME}
-  -DCONFIG_H=\"${CONFIG_H}\" 
+  -DCONFIG_H=\"${CONFIG_H}\"
 )
 
-if(env STREQUAL "ib")
-  list(APPEND CXXFLAGS ${ERPC_CFLAGS_IB})
-elseif(env STREQUAL "dpdk")
-  list(APPEND CXXFLAGS ${ERPC_CFLAGS_DPDK})
-else()
-  list(APPEND CXXFLAGS ${ERPC_CFLAGS_ETH})
+# Add eRPC flags only when not building lab tests
+if(NOT BUILD_RAFT_LAB_TESTS)
+  if(env STREQUAL "ib")
+    list(APPEND CXXFLAGS ${ERPC_CFLAGS_IB})
+  elseif(env STREQUAL "dpdk")
+    list(APPEND CXXFLAGS ${ERPC_CFLAGS_DPDK})
+  else()
+    list(APPEND CXXFLAGS ${ERPC_CFLAGS_ETH})
+  endif()
 endif()
 if(GPROF)
   list(APPEND CXXFLAGS -pg -static-libstdc++ -static-libgcc)
@@ -401,21 +411,24 @@ set(ASIO_PATH "${ERPC_PATH}/third_party/asio")
 set(ASIO_CFLAGS -I${ASIO_PATH}/include)
 
 set(CFLAGS ${ASIO_CFLAGS})
-if(env STREQUAL "ib")
-  separate_arguments(ERPC_CFLAGS_IB_LIST UNIX_COMMAND "${ERPC_CFLAGS_IB}")
-  list(APPEND CFLAGS ${ERPC_CFLAGS_IB_LIST})
-  separate_arguments(ERPC_LDFLAGS_IB_LIST UNIX_COMMAND "${ERPC_LDFLAGS_IB}")
-  list(APPEND LDFLAGS ${ERPC_LDFLAGS_IB_LIST})
-elseif(env STREQUAL "dpdk")
-  separate_arguments(ERPC_CFLAGS_DPDK_LIST UNIX_COMMAND "${ERPC_CFLAGS_DPDK}")
-  list(APPEND CFLAGS ${ERPC_CFLAGS_DPDK_LIST})
-  separate_arguments(ERPC_LDFLAGS_DPDK_LIST UNIX_COMMAND "${ERPC_LDFLAGS_DPDK}")
-  list(APPEND LDFLAGS ${ERPC_LDFLAGS_DPDK_LIST})
-else()
-  separate_arguments(ERPC_CFLAGS_ETH_LIST UNIX_COMMAND "${ERPC_CFLAGS_ETH}")
-  list(APPEND CFLAGS ${ERPC_CFLAGS_ETH_LIST})
-  separate_arguments(ERPC_LDFLAGS_ETH_LIST UNIX_COMMAND "${ERPC_LDFLAGS_ETH}")
-  list(APPEND LDFLAGS ${ERPC_LDFLAGS_ETH_LIST})
+# Add eRPC linker flags only when not building lab tests
+if(NOT BUILD_RAFT_LAB_TESTS)
+  if(env STREQUAL "ib")
+    separate_arguments(ERPC_CFLAGS_IB_LIST UNIX_COMMAND "${ERPC_CFLAGS_IB}")
+    list(APPEND CFLAGS ${ERPC_CFLAGS_IB_LIST})
+    separate_arguments(ERPC_LDFLAGS_IB_LIST UNIX_COMMAND "${ERPC_LDFLAGS_IB}")
+    list(APPEND LDFLAGS ${ERPC_LDFLAGS_IB_LIST})
+  elseif(env STREQUAL "dpdk")
+    separate_arguments(ERPC_CFLAGS_DPDK_LIST UNIX_COMMAND "${ERPC_CFLAGS_DPDK}")
+    list(APPEND CFLAGS ${ERPC_CFLAGS_DPDK_LIST})
+    separate_arguments(ERPC_LDFLAGS_DPDK_LIST UNIX_COMMAND "${ERPC_LDFLAGS_DPDK}")
+    list(APPEND LDFLAGS ${ERPC_LDFLAGS_DPDK_LIST})
+  else()
+    separate_arguments(ERPC_CFLAGS_ETH_LIST UNIX_COMMAND "${ERPC_CFLAGS_ETH}")
+    list(APPEND CFLAGS ${ERPC_CFLAGS_ETH_LIST})
+    separate_arguments(ERPC_LDFLAGS_ETH_LIST UNIX_COMMAND "${ERPC_LDFLAGS_ETH}")
+    list(APPEND LDFLAGS ${ERPC_LDFLAGS_ETH_LIST})
+  endif()
 endif()
 
 list(APPEND LDFLAGS
@@ -423,7 +436,6 @@ list(APPEND LDFLAGS
   -pthread
   -lboost_fiber
   -lboost_context
-  -lboost_system
   -lboost_thread
 )
 
@@ -691,7 +703,6 @@ target_compile_definitions(txlog PRIVATE CONFIG_H=\"${CONFIG_H}\")
 
 target_link_libraries(txlog
     yaml-cpp
-    Boost::system
     Boost::filesystem
     Boost::thread
     Boost::coroutine
@@ -1119,7 +1130,6 @@ if(BUILD_RAFT_LAB_TESTS)
     target_link_libraries(labtest
         txlog
         yaml-cpp
-        Boost::system
         Boost::filesystem
         Boost::thread
         Boost::coroutine

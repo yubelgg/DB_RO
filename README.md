@@ -10,7 +10,7 @@ MIT 6.824 style distributed systems lab rebuilt in C++. This project includes a 
 
 ## Lab Environment
 
-A modern Linux environment (e.g., Debian 12 x86-64) with 8-core/16G-memory is recommended for the labs. If you do not have access to this, consider using a cloud virtual machine. The labs possibly work on other environments (Mac, WSL, Other Linux distros, or with fewer CPU/memory resources) but it is not tested. 
+A modern Linux environment (e.g., Debian 12 or Arch Linux x86-64) with 8-core/16G-memory is recommended for the labs. If you do not have access to this, consider using a cloud virtual machine. The labs possibly work on other environments (Mac, WSL, Other Linux distros, or with fewer CPU/memory resources) but support may vary. 
 
 ## Getting Started
 
@@ -20,11 +20,22 @@ A modern Linux environment (e.g., Debian 12 x86-64) with 8-core/16G-memory is re
 git clone --recursive [repo-addr]
 cd janus
 ```
-### Install Dependencies (Debian 12)
+### Install Dependencies
+
+#### Debian/Ubuntu
 
 ```bash
 sudo bash apt_packages.sh
 ```
+
+#### Arch Linux
+
+```bash
+sudo bash pacman_packages.sh
+pip install -r requirements.txt
+```
+
+**Note**: On Arch Linux, development headers are included with base packages (no separate `-dev` packages needed). The script uses `base-devel` instead of `build-essential` and installs the latest LLVM/Clang versions from the rolling release.
 
 ### Build
 
