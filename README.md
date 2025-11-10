@@ -5,7 +5,7 @@ MIT 6.824 style distributed systems lab rebuilt in C++. This project includes a 
 ## Status
 
 - [ ] Raft implementation from old code is not working
-- [ ] HLC implementation
+- [ ] OCC reading
 
 ## Lab Assignments
 
