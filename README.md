@@ -4,8 +4,12 @@ MIT 6.824 style distributed systems lab rebuilt in C++. This project includes a 
 
 ## Status
 
+### Read planner.md for a more detailed info on the project
+
 - [ ] Raft implementation from old code is not working
 - [ ] OCC reading
+- [ ] parallel validation
+- [ ] early abort detection
 
 ## Lab Assignments
 
