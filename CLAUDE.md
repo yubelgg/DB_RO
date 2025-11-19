@@ -11,6 +11,8 @@ This repository contains two related distributed transaction systems:
 
 The codebase is primarily C++17 with multiple build systems (CMake, Makefile, WAF).
 
+Use the @PLANNER.md for more detailed plan for our goal to implment OCC.
+
 ## Build Commands
 
 ### Important: Build Time Expectations
