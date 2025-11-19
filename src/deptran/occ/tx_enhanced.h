@@ -1,5 +1,6 @@
 #pragma once
 
+#include "batch_metadata.h"
 #include "tx.h"
 
 namespace janus {
@@ -74,11 +75,20 @@ public:
    */
   virtual bool InsertRow(Table *tbl, Row *row) override;
 
+  /**
+   * Get batch metadata for this transaction
+   * Used by BatchValidator to track validation state
+   */
+  BatchMetadata &GetBatchMetadata() { return batch_meta_; }
+  const BatchMetadata &GetBatchMetadata() const { return batch_meta_; }
+
 private:
-  // TODO: Add operation counter for periodic abort checking
-  // TODO: Add reference to EarlyAbortDetector
-  // TODO: Add BatchMetadata for batch validation
-  // TODO: Add early_aborted_ flag
+  // Batch validation metadata
+  BatchMetadata batch_meta_;
+
+  // TODO (Step 4): Add operation counter for periodic abort checking
+  // TODO (Step 4): Add reference to EarlyAbortDetector
+  // TODO (Step 4): Add early_aborted_ flag
 };
 
 } // namespace janus
