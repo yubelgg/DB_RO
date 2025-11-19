@@ -1,6 +1,11 @@
 #pragma once
 
+#include "batch_validator.h"
 #include "scheduler.h"
+#include "validation_queue.h"
+#include <atomic>
+#include <condition_variable>
+#include <thread>
 
 namespace janus {
 
@@ -23,12 +28,12 @@ public:
   virtual ~SchedulerOccEnhanced();
 
   /**
-   * Validation phase - currently delegates to parent SchedulerOcc::DoPrepare()
+   * Validation phase - enqueue transaction to validation queue
    *
-   * Future Implementation:
-   * - Enqueue transaction to ValidationQueue instead of immediate validation
-   * - Background thread will process batches
-   * - Use BatchValidator for parallel validation
+   * Step 2 Implementation:
+   * - Enqueue transaction to ValidationQueue
+   * - Wait for background thread to validate batch
+   * - Return result from batch validation
    *
    * @param tx_id Transaction ID to validate
    * @return true if validation succeeds (locks acquired), false if aborted
@@ -47,10 +52,25 @@ public:
   virtual void DoCommit(Tx &tx) override;
 
 private:
-  // TODO: Add BatchValidator* batch_validator_ field
-  // TODO: Add EarlyAbortDetector* early_abort_detector_ field
-  // TODO: Add ValidationQueue validation_queue_ field
-  // TODO: Add std::thread validation_thread_ for batch processing
+  /**
+   * Background thread that processes validation batches
+   */
+  void ValidationLoop();
+
+  // Batch validation components
+  ValidationQueue validation_queue_;
+  std::unique_ptr<BatchValidator> batch_validator_;
+
+  // Background thread for batch processing
+  std::thread validation_thread_;
+  std::atomic<bool> running_{false};
+
+  // Configuration
+  size_t batch_size_ = 32;                       // Max transactions per batch
+  std::chrono::microseconds batch_timeout_{100}; // Max wait time for batch
+
+  // TODO (Step 4): Add EarlyAbortDetector
+  // std::unique_ptr<EarlyAbortDetector> early_abort_detector_;
 };
 
 } // namespace janus
