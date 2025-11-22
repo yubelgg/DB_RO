@@ -4,14 +4,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
+Use the @PLANNER.md for more detailed plan for our goal to implement OCC.
+Use the @doc/progress.md for progress on the project and what needs to be worked on.
+
 This repository contains two related distributed transaction systems:
 
 - **Janus**: Implementation of the OSDI'16 paper "Consolidating Concurrency Control and Consensus for Commits under Conflicts"
 - **Mako**: A speculative distributed transaction system with geo-replication (OSDI'25)
 
 The codebase is primarily C++17 with multiple build systems (CMake, Makefile, WAF).
-
-Use the @PLANNER.md for more detailed plan for our goal to implment OCC.
 
 ## Build Commands
 
