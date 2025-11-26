@@ -1,13 +1,19 @@
 #include "scheduler_enhanced.h"
+#include "tx_enhanced.h"
+#include "../memdb/txn_occ.h"
+#include "../memdb/row.h"
 #include "base/all.hpp"
 
 namespace janus {
 
 SchedulerOccEnhanced::SchedulerOccEnhanced() : SchedulerOcc() {
+  // Create early abort detector
+  early_abort_detector_ = std::make_unique<EarlyAbortDetector>();
+
   // Create batch validator
   batch_validator_ =
       std::make_unique<BatchValidator>(batch_size_,
-                                       1 // num_workers (unused in Step 2)
+                                       8 // num_workers for parallel validation
       );
 
   // Start background validation thread
@@ -29,6 +35,17 @@ SchedulerOccEnhanced::~SchedulerOccEnhanced() {
   // Wait for thread to finish
   if (validation_thread_.joinable()) {
     validation_thread_.join();
+  }
+
+  // Log final statistics
+  if (early_abort_detector_) {
+    const auto& stats = early_abort_detector_->GetStats();
+    Log_info("SchedulerOccEnhanced: Early abort stats - "
+             "reads=%llu, writes=%llu, early_aborts=%llu, version_changes=%llu",
+             stats.total_reads.load(),
+             stats.total_writes.load(),
+             stats.early_aborts_detected.load(),
+             stats.version_changes_processed.load());
   }
 
   Log_info("SchedulerOccEnhanced: shut down");
@@ -61,9 +78,44 @@ bool SchedulerOccEnhanced::DoPrepare(txnid_t tx_id) {
 }
 
 void SchedulerOccEnhanced::DoCommit(Tx &tx) {
-  // Step 2: Just delegate to parent
-  // TODO (Step 4): Notify EarlyAbortDetector of version changes
+  // First, perform the commit using parent implementation
+  // This applies writes and increments versions
   SchedulerOcc::DoCommit(tx);
+
+  // After commit, notify early abort detector of version changes
+  if (early_abort_detector_ && early_abort_detector_->IsEnabled()) {
+    auto* tx_enhanced = dynamic_cast<TxOccEnhanced*>(&tx);
+    if (tx_enhanced) {
+      auto* mdb_txn = dynamic_cast<mdb::TxnOCC*>(tx_enhanced->mdb_txn());
+      if (mdb_txn) {
+        // Notify detector about all columns that were written
+        // This triggers early abort detection for conflicting transactions
+        for (auto& it : mdb_txn->updates_) {
+          Row* row = it.first;
+          auto* v_row = dynamic_cast<VersionedRow*>(row);
+          
+          if (v_row) {
+            // Get all columns that were updated in this row
+            for (auto& col_update : it.second) {
+              mdb::column_id_t col_id = col_update.first;
+              
+              // Get the new version (already incremented by DoCommit)
+              i64 new_version = v_row->get_column_ver(col_id);
+              
+              // Notify detector - this will mark conflicting txs for abort
+              early_abort_detector_->NotifyVersionChange(row, col_id, new_version);
+              
+              Log_debug("Notified version change: row=%p col=%d new_ver=%" PRIx64,
+                        row, col_id, new_version);
+            }
+          }
+        }
+      }
+      
+      // Clean up this transaction's tracking in the detector
+      early_abort_detector_->RemoveTransaction(tx_enhanced->tid_);
+    }
+  }
 }
 
 void SchedulerOccEnhanced::ValidationLoop() {
@@ -86,7 +138,7 @@ void SchedulerOccEnhanced::ValidationLoop() {
 
     Log_debug("ValidationLoop: processing batch of size %zu", batch.size());
 
-    // Validate batch (serial validation in Step 2)
+    // Validate batch (uses parallel validation if batch is large enough)
     auto result = batch_validator_->ValidateBatch(batch);
 
     Log_debug("ValidationLoop: batch %zu validation complete, "
