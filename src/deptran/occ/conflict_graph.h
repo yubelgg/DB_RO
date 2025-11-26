@@ -4,16 +4,9 @@
 #include <unordered_map>
 #include <unordered_set>
 #include "tx_enhanced.h"
+#include "batch_metadata.h"
 
 namespace janus {
-
-// Types of conflicts between transactions
-enum class ConflictType {
-  NONE = 0,
-  READ_WRITE,   // T1 reads, T2 writes same row
-  WRITE_READ,   // T1 writes, T2 reads same row
-  WRITE_WRITE   // T1 and T2 both write same row
-};
 
 /**
  * ConflictGraph - Analyzes dependencies between transactions in a batch
