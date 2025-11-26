@@ -7,6 +7,9 @@
 #include "../memdb/row.h"
 #include "base/all.hpp"
 
+using rrr::i64;
+using mdb::Row;
+
 namespace janus {
 
 /**
@@ -15,9 +18,9 @@ namespace janus {
  */
 struct RowColumnKey {
   Row* row;
-  mdb::column_id_t column_id;
+  mdb::colid_t column_id;
   
-  RowColumnKey(Row* r, mdb::column_id_t col) : row(r), column_id(col) {}
+  RowColumnKey(Row* r, mdb::colid_t col) : row(r), column_id(col) {}
   
   bool operator==(const RowColumnKey& other) const {
     return row == other.row && column_id == other.column_id;
@@ -72,20 +75,20 @@ public:
    * Register a read operation
    * Called during transaction execution when reading a column
    */
-  void RegisterRead(i64 tx_id, Row* row, mdb::column_id_t column_id, i64 version);
+  void RegisterRead(i64 tx_id, Row* row, mdb::colid_t column_id, i64 version);
   
   /**
    * Register a write operation
    * Called during transaction execution when writing a column
    */
-  void RegisterWrite(i64 tx_id, Row* row, mdb::column_id_t column_id);
+  void RegisterWrite(i64 tx_id, Row* row, mdb::colid_t column_id);
   
   /**
    * Notify detector that a column's version has changed
    * Called when a transaction commits and increments version
    * Triggers early abort for transactions reading old versions
    */
-  void NotifyVersionChange(Row* row, mdb::column_id_t column_id, i64 new_version);
+  void NotifyVersionChange(Row* row, mdb::colid_t column_id, i64 new_version);
   
   /**
    * Check if a transaction should abort

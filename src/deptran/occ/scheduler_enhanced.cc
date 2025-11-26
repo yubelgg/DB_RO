@@ -90,24 +90,20 @@ void SchedulerOccEnhanced::DoCommit(Tx &tx) {
       if (mdb_txn) {
         // Notify detector about all columns that were written
         // This triggers early abort detection for conflicting transactions
-        for (auto& it : mdb_txn->updates_) {
-          Row* row = it.first;
+        for (auto& it : mdb_txn->ver_check_write_) {
+          Row* row = it.first.row;
+          mdb::colid_t col_id = it.first.col_id;
           auto* v_row = dynamic_cast<VersionedRow*>(row);
-          
+
           if (v_row) {
-            // Get all columns that were updated in this row
-            for (auto& col_update : it.second) {
-              mdb::column_id_t col_id = col_update.first;
-              
-              // Get the new version (already incremented by DoCommit)
-              i64 new_version = v_row->get_column_ver(col_id);
-              
-              // Notify detector - this will mark conflicting txs for abort
-              early_abort_detector_->NotifyVersionChange(row, col_id, new_version);
-              
-              Log_debug("Notified version change: row=%p col=%d new_ver=%" PRIx64,
-                        row, col_id, new_version);
-            }
+            // Get the new version (already incremented by DoCommit)
+            i64 new_version = v_row->get_column_ver(col_id);
+
+            // Notify detector - this will mark conflicting txs for abort
+            early_abort_detector_->NotifyVersionChange(row, col_id, new_version);
+
+            Log_debug("Notified version change: row=%p col=%d new_ver=%" PRIx64,
+                      row, col_id, new_version);
           }
         }
       }

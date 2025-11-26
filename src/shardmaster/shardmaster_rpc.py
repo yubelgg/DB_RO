@@ -3,10 +3,10 @@ from simplerpc.marshal import Marshal
 from simplerpc.future import Future
 
 class ShardMasterService(object):
-    JOIN = 0x2dc2ad67
-    LEAVE = 0x65f18932
-    MOVE = 0x5f74a2b6
-    QUERY = 0x27dad11d
+    JOIN = 0x5a360926
+    LEAVE = 0x4beb5f48
+    MOVE = 0x3ab92f7a
+    QUERY = 0x53b42396
 
     __input_type_info__ = {
         'Join': ['std::map<uint32_t, std::vector<uint32_t>>'],

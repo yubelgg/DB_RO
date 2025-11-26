@@ -3,9 +3,9 @@ from simplerpc.marshal import Marshal
 from simplerpc.future import Future
 
 class ShardKvService(object):
-    PUT = 0x362b501b
-    APPEND = 0x5e937191
-    GET = 0x400b7569
+    PUT = 0x3134b34b
+    APPEND = 0x14f7e03e
+    GET = 0x1d15617d
 
     __input_type_info__ = {
         'Put': ['uint64_t','std::string','std::string'],

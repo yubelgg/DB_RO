@@ -5,9 +5,9 @@ from simplerpc.future import Future
 LogEntryRPC = Marshal.reg_type('LogEntryRPC', [('term', 'uint64_t'), ('command', 'MarshallDeputy')])
 
 class RaftService(object):
-    VOTE = 0x58f3e5ee
-    APPENDENTRIES = 0x4062c317
-    EMPTYAPPENDENTRIES = 0x6ef78719
+    VOTE = 0x2393abb8
+    APPENDENTRIES = 0x587dd9a0
+    EMPTYAPPENDENTRIES = 0x63525725
 
     __input_type_info__ = {
         'Vote': ['uint64_t','ballot_t','siteid_t','ballot_t'],

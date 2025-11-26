@@ -12,9 +12,10 @@ namespace janus {
  * Enum representing types of conflicts between transactions
  */
 enum class ConflictType {
-  READ_WRITE, // tx1 reads, tx2 writes same location
-  WRITE_READ, // tx1 writes, tx2 reads same location
-  WRITE_WRITE // Both write same location
+  NONE,        // No conflict
+  READ_WRITE,  // tx1 reads, tx2 writes same location
+  WRITE_READ,  // tx1 writes, tx2 reads same location
+  WRITE_WRITE  // Both write same location
 };
 
 /**

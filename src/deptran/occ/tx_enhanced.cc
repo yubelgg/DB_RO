@@ -6,7 +6,7 @@
 
 namespace janus {
 
-TxOccEnhanced::TxOccEnhanced(epoch_t epoch, txnid_t tid, Scheduler* mgr)
+TxOccEnhanced::TxOccEnhanced(epoch_t epoch, txnid_t tid, TxLogServer* mgr)
     : TxOcc(epoch, tid, mgr),
       early_abort_detector_(nullptr),
       operation_count_(0),

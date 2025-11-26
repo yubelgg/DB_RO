@@ -3,9 +3,9 @@ from simplerpc.marshal import Marshal
 from simplerpc.future import Future
 
 class KvService(object):
-    PUT = 0x4e90b967
-    APPEND = 0x1e8a9790
-    GET = 0x6d0fc92b
+    PUT = 0x290f6531
+    APPEND = 0x345937c6
+    GET = 0x4b3e2e6a
 
     __input_type_info__ = {
         'Put': ['uint64_t','std::string','std::string'],

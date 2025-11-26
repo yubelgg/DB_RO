@@ -1,6 +1,8 @@
 #include "early_abort_detector.h"
 #include <algorithm>
 
+using rrr::i64;
+
 namespace janus {
 
 EarlyAbortDetector::EarlyAbortDetector() 
@@ -16,7 +18,7 @@ EarlyAbortDetector::~EarlyAbortDetector() {
 }
 
 void EarlyAbortDetector::RegisterRead(i64 tx_id, Row* row, 
-                                       mdb::column_id_t column_id, i64 version) {
+                                       mdb::colid_t column_id, i64 version) {
   if (!enabled_) return;
   
   RowColumnKey key(row, column_id);
@@ -34,7 +36,7 @@ void EarlyAbortDetector::RegisterRead(i64 tx_id, Row* row,
 }
 
 void EarlyAbortDetector::RegisterWrite(i64 tx_id, Row* row, 
-                                        mdb::column_id_t column_id) {
+                                        mdb::colid_t column_id) {
   if (!enabled_) return;
   
   RowColumnKey key(row, column_id);
@@ -51,7 +53,7 @@ void EarlyAbortDetector::RegisterWrite(i64 tx_id, Row* row,
 }
 
 void EarlyAbortDetector::NotifyVersionChange(Row* row, 
-                                              mdb::column_id_t column_id, 
+                                              mdb::colid_t column_id, 
                                               i64 new_version) {
   if (!enabled_) return;
   

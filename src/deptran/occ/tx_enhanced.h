@@ -19,8 +19,8 @@ class EarlyAbortDetector;
  */
 class TxOccEnhanced : public TxOcc {
 public:
-  // Constructor
-  TxOccEnhanced(epoch_t epoch, txnid_t tid, Scheduler* mgr);
+  // Constructor with early abort detector initialization
+  TxOccEnhanced(epoch_t epoch, txnid_t tid, TxLogServer* mgr);
 
   virtual ~TxOccEnhanced();
 

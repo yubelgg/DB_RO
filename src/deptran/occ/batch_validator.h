@@ -4,21 +4,27 @@
 #include "tx_enhanced.h"
 #include <chrono>
 #include <vector>
+#include <thread>
+#include <queue>
+#include <mutex>
+#include <condition_variable>
+#include <future>
+#include <atomic>
+#include <unordered_set>
 
 namespace janus {
+
+// Forward declaration
+class ConflictGraph;
 
 /**
  * Batch Validator for Enhanced OCC
  *
- * Step 2 Implementation: Serial validation of batches
+ * Step 3 Implementation: Parallel validation with conflict graph
  * - Collects transactions into batches
- * - Validates them serially (one by one)
- * - Returns validation results
- *
- * Step 3 Enhancement (TODO): Parallel validation
- * - Build conflict graph
- * - Partition independent transactions
- * - Validate in parallel using worker threads
+ * - Builds conflict graph to identify independent transactions
+ * - Validates independent sets in parallel using worker threads
+ * - Falls back to serial validation for small batches
  */
 class BatchValidator {
 public:
@@ -26,24 +32,20 @@ public:
    * Constructor
    *
    * @param batch_size Maximum transactions per batch
-   * @param num_workers Number of validation worker threads (unused in Step 2)
+   * @param num_workers Number of validation worker threads
    */
   BatchValidator(size_t batch_size, int num_workers = 1);
 
   ~BatchValidator();
 
   /**
-   * Validate a batch of transactions (Step 2: Serial validation)
+   * Validate a batch of transactions
    *
-   * Current implementation:
-   * - Validates each transaction sequentially
+   * Implementation:
+   * - For large batches: builds conflict graph and validates in parallel
+   * - For small batches: validates serially for efficiency
    * - Uses existing version_check() from baseline OCC
    * - Acquires locks for transactions that pass validation
-   *
-   * Future (Step 3):
-   * - Build conflict graph
-   * - Partition into independent sets
-   * - Validate partitions in parallel
    *
    * @param batch Vector of transactions to validate
    * @return BatchValidationResult with per-transaction results
@@ -73,12 +75,56 @@ private:
    */
   bool ValidateSingle(TxOccEnhanced *tx);
 
+  /**
+   * Validate batch serially (for small batches)
+   */
+  void ValidateBatchSerial(const std::vector<TxOccEnhanced*>& batch,
+                           BatchValidationResult& result);
+
+  /**
+   * Validate batch in parallel using conflict graph
+   */
+  void ValidateBatchParallel(const std::vector<TxOccEnhanced*>& batch,
+                             BatchValidationResult& result);
+
+  /**
+   * Validate an independent set of transactions in parallel
+   */
+  void ValidateIndependentSet(const std::vector<TxOccEnhanced*>& batch,
+                              const std::vector<size_t>& indices,
+                              BatchValidationResult& result);
+
+  /**
+   * Worker thread function
+   */
+  void WorkerThread(int worker_id);
+
+  /**
+   * Helper: Extract read/write sets from transaction
+   */
+  void GetTransactionAccessSets(TxOccEnhanced* tx,
+                                std::unordered_set<Row*>& read_set,
+                                std::unordered_set<Row*>& write_set);
+
+  // Configuration
   size_t batch_size_;    // Maximum batch size
-  int num_workers_;      // Number of validation threads (for Step 3)
+  int num_workers_;      // Number of validation threads
   size_t batch_counter_; // Batch ID counter
 
-  // TODO (Step 3): Add worker thread pool
-  // TODO (Step 3): Add conflict graph builder
+  // Worker thread pool
+  std::vector<std::thread> workers_;
+
+  // Work queue for parallel validation
+  struct WorkItem {
+    TxOccEnhanced* tx;
+    size_t tx_index;
+    std::promise<bool> result;
+  };
+
+  std::queue<WorkItem> work_queue_;
+  std::mutex work_queue_mutex_;
+  std::condition_variable work_queue_cv_;
+  std::atomic<bool> shutdown_;
 };
 
 } // namespace janus
