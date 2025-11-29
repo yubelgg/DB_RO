@@ -1,0 +1,73 @@
+# OCC Integration Tests - Full Suite
+# Comprehensive testing with all scenarios
+# Run with: ./build/labtest -f config/occ_integration_full.yml
+
+test_suite: "occ_integration_full"
+description: "Comprehensive OCC integration test suite"
+
+# Run all tests with extensive parameters
+tests:
+  # Test 1: Component Integration
+  component_integration:
+    enabled: true
+    num_transactions: 50
+    num_keys: 10
+    keys_per_transaction: 5
+    num_threads: 50
+    verify_coordination: true  # Verify detector and graph agree
+    
+  # Test 2: Performance Metrics
+  performance_metrics:
+    enabled: true
+    num_transactions: 200
+    key_space_sizes: [5, 10, 20, 50, 100, 200]
+    keys_per_transaction: 3
+    num_runs: 5
+    calculate_average: true
+    
+  # Test 3: Concurrent Conflicts
+  concurrent_conflicts:
+    enabled: true
+    num_transactions: 100
+    num_keys: 10
+    num_threads: 100
+    measure_contention: true
+
+  # Test 4: Cycle Detection Accuracy
+  cycle_detection:
+    enabled: true
+    num_transactions: 30
+    force_cycles: true
+    cycle_patterns: ["simple", "complex", "nested"]
+    
+  # Test 5: Scalability Test
+  scalability:
+    enabled: true
+    transaction_counts: [10, 50, 100, 200, 500]
+    measure_throughput: true
+    measure_latency: true
+
+# Configuration
+early_abort_detector:
+  enable_cycle_detection: true
+  enable_conflict_counting: true
+  max_conflicts: 10
+  enable_bloom_filter: false
+  
+conflict_graph:
+  enable_path_caching: true
+  
+# Output settings
+output:
+  verbose: true
+  show_test_progress: true
+  show_statistics: true
+  show_performance_table: true
+  save_results: true
+  results_file: "results/occ_integration_full_results.json"
+  log_file: "logs/occ_integration_full.log"
+  
+# Timeouts (seconds)
+timeouts:
+  per_test: 600
+  total_suite: 3600

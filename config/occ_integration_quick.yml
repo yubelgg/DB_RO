@@ -1,0 +1,29 @@
+# OCC Integration Tests - Quick Run
+# Minimal config for fast integration testing
+# Run with: ./build/labtest -f config/occ_integration_quick.yml
+
+test_suite: "occ_integration_quick"
+
+# Quick test - only essential tests
+tests:
+  component_integration:
+    enabled: true
+    num_transactions: 10
+    num_keys: 5
+    
+  performance_metrics:
+    enabled: true
+    num_transactions: 50
+    key_space_sizes: [5, 20]
+    
+  concurrent_conflicts:
+    enabled: false
+
+# Simple settings
+early_abort_detector:
+  enable_cycle_detection: true
+  max_conflicts: 10
+  
+output:
+  verbose: false
+  show_statistics: true

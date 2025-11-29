@@ -382,7 +382,7 @@ if(GPROF)
 endif()
 
 set(LZ4LDFLAGS
-  -L${CMAKE_CURRENT_SOURCE_DIR}/third-party/lz4
+  -L${CMAKE_CURRENT_SOURCE_DIR}/third-party/glz4
   -llz4
   -Wl,-rpath,${TOP}/third-party/lz4
 )
@@ -1043,7 +1043,51 @@ if(BUILD_TESTS)
     target_compile_options(test_and_event PRIVATE ${TEST_COMPILE_OPTIONS})
     target_link_libraries(test_and_event ${TEST_LINK_LIBS} ${GTEST_LIBRARIES} ${GTEST_MAIN_LIBRARIES} pthread)
     add_test(NAME test_and_event COMMAND test_and_event)
-
+    
+    # OCC Early Abort Detection Tests
+    add_executable(test_occ_early_abort 
+        test/test_early_abort.cc
+        src/deptran/occ/conflict_graph.cc
+        src/deptran/occ/early_abort_detector.cc
+    )
+    target_include_directories(test_occ_early_abort PRIVATE 
+        src
+        src/deptran/occ              ⭐ THIS IS THE MAGIC!
+        ${GTEST_INCLUDE_DIRS}
+    )
+    target_compile_options(test_occ_early_abort PRIVATE -std=c++17 -Wall -Wextra -pthread)
+    target_link_libraries(test_occ_early_abort ${GTEST_LIBRARIES} ${GTEST_MAIN_LIBRARIES} pthread)
+    
+    add_test(NAME test_occ_early_abort COMMAND test_occ_early_abort)
+    
+    add_executable(test_occ_focused_integration
+        test/test_occ_focused_integration.cc
+        src/deptran/occ/conflict_graph.cc
+        src/deptran/occ/early_abort_detector.cc
+    )
+    
+    target_include_directories(test_occ_focused_integration PRIVATE
+        src
+        src/deptran/occ
+    )
+    
+    target_compile_options(test_occ_focused_integration PRIVATE 
+        -std=c++17 
+        -Wall 
+        -Wextra 
+        -pthread
+    )
+    
+    target_link_libraries(test_occ_focused_integration ${GTEST_LIBRARIES} ${GTEST_MAIN_LIBRARIES} pthread)
+    
+    add_test(NAME test_occ_focused_integration COMMAND test_occ_focused_integration)
+    
+    
+    
+    
+    
+    
+    
     # Integration tests from CI
     add_test(NAME simpleTransaction COMMAND simpleTransaction)
 
@@ -1114,12 +1158,14 @@ if(BUILD_RAFT_LAB_TESTS)
     # Create labtest executable (equivalent to WAF's deptran_server)
     add_executable(labtest src/deptran/s_main.cc)
 
+
     target_include_directories(labtest PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/src
         ${CMAKE_CURRENT_SOURCE_DIR}/src/rrr
         ${CMAKE_CURRENT_SOURCE_DIR}/src/deptran
         ${CMAKE_CURRENT_SOURCE_DIR}/src/memdb
         ${CMAKE_CURRENT_SOURCE_DIR}/third-party/rusty-cpp/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/src/deptran/occ
         ${Boost_INCLUDE_DIRS}
     )
 

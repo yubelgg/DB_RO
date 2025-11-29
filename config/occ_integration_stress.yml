@@ -1,0 +1,70 @@
+# OCC Integration Tests - Stress Test
+# High load, high contention stress testing
+# Run with: ./build/labtest -f config/occ_integration_stress.yml
+
+test_suite: "occ_integration_stress"
+description: "High-load stress test for OCC early abort detection"
+
+# Stress test configuration
+tests:
+  # Extreme concurrent conflicts
+  concurrent_conflicts:
+    enabled: true
+    num_transactions: 500        # Many transactions
+    num_keys: 5                  # Very small key space = extreme contention
+    keys_per_transaction: 8      # Many keys per txn = more conflicts
+    num_threads: 500             # Many threads
+    
+  # Performance under extreme load
+  performance_metrics:
+    enabled: true
+    num_transactions: 1000
+    key_space_sizes: [3, 5, 10]  # Small key spaces only
+    keys_per_transaction: 5
+    num_runs: 10
+    
+  # Component integration under stress
+  component_integration:
+    enabled: true
+    num_transactions: 200
+    num_keys: 5
+    keys_per_transaction: 10
+    num_threads: 200
+    verify_coordination: true
+    
+  # Continuous stress test
+  continuous_stress:
+    enabled: true
+    duration_seconds: 300        # Run for 5 minutes
+    num_threads: 100
+    num_keys: 10
+    transactions_per_second: 1000
+
+# Aggressive early abort settings
+early_abort_detector:
+  enable_cycle_detection: true
+  enable_conflict_counting: true
+  max_conflicts: 3               # Lower threshold = more aborts
+  enable_bloom_filter: true
+  bloom_filter_size: 100000
+  
+# Expected results (for validation)
+expected_results:
+  abort_rate_range: [0.50, 0.95]  # Expect 50-95% abort rate
+  min_throughput: 500             # At least 500 txn/s
+  max_average_latency_ms: 100     # Under 100ms average
+  
+# Output settings
+output:
+  verbose: false                  # Less verbose for performance
+  show_test_progress: true
+  show_statistics: true
+  show_performance_table: true
+  save_results: true
+  results_file: "results/occ_stress_results.json"
+  log_file: "logs/occ_stress.log"
+  
+# Timeouts
+timeouts:
+  per_test: 900
+  total_suite: 3600
