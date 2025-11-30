@@ -60,3 +60,5 @@ nfs_sync_*
 out-perf.masstree/*
 .cache/*
 cmake-build/*
+test_early_abort
+test_occ_focused_integration

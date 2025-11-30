@@ -1,0 +1,54 @@
+# OCC Integration Tests Configuration
+# Used by labtest to determine which integration tests to execute
+# Run with: ./build/labtest -f config/occ_integration_tests.yml
+
+# Test suite identification
+test_suite: "occ_integration"
+description: "OCC Early Abort Detection Integration Tests"
+
+# Which tests to run
+tests:
+  # Test 1: Component Integration
+  # Tests EarlyAbortDetector and ConflictGraph working together
+  component_integration:
+    enabled: true
+    num_transactions: 20
+    num_keys: 5
+    keys_per_transaction: 3
+    num_threads: 20
+    
+  # Test 2: Performance Metrics
+  # Measures abort rates and throughput under different contention
+  performance_metrics:
+    enabled: true
+    num_transactions: 100
+    key_space_sizes: [5, 20, 100]
+    keys_per_transaction: 3
+    num_runs: 3
+    
+  # Test 3: Concurrent Conflicts (Optional)
+  # High-contention scenario with many threads
+  concurrent_conflicts:
+    enabled: false
+    num_transactions: 50
+    num_keys: 10
+    num_threads: 50
+
+# Early Abort Detector Configuration
+early_abort_detector:
+  enable_cycle_detection: true
+  enable_conflict_counting: true
+  max_conflicts: 10
+  
+# Output settings
+output:
+  verbose: true
+  show_test_progress: true
+  show_statistics: true
+  show_performance_table: true
+  log_file: "logs/occ_integration_tests.log"
+  
+# Timeouts (seconds)
+timeouts:
+  per_test: 300
+  total_suite: 600
