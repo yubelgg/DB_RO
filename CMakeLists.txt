@@ -1043,44 +1043,50 @@ if(BUILD_TESTS)
     target_compile_options(test_and_event PRIVATE ${TEST_COMPILE_OPTIONS})
     target_link_libraries(test_and_event ${TEST_LINK_LIBS} ${GTEST_LIBRARIES} ${GTEST_MAIN_LIBRARIES} pthread)
     add_test(NAME test_and_event COMMAND test_and_event)
-    
+
     # OCC Early Abort Detection Tests
-    add_executable(test_occ_early_abort 
-        test/test_early_abort.cc
-        src/deptran/occ/conflict_graph.cc
-        src/deptran/occ/early_abort_detector.cc
-    )
-    target_include_directories(test_occ_early_abort PRIVATE 
-        src
-        src/deptran/occ              ⭐ THIS IS THE MAGIC!
-        ${GTEST_INCLUDE_DIRS}
-    )
-    target_compile_options(test_occ_early_abort PRIVATE -std=c++17 -Wall -Wextra -pthread)
-    target_link_libraries(test_occ_early_abort ${GTEST_LIBRARIES} ${GTEST_MAIN_LIBRARIES} pthread)
-    
-    add_test(NAME test_occ_early_abort COMMAND test_occ_early_abort)
-    
-    add_executable(test_occ_focused_integration
-        test/test_occ_focused_integration.cc
-        src/deptran/occ/conflict_graph.cc
-        src/deptran/occ/early_abort_detector.cc
-    )
-    
-    target_include_directories(test_occ_focused_integration PRIVATE
-        src
-        src/deptran/occ
-    )
-    
-    target_compile_options(test_occ_focused_integration PRIVATE 
-        -std=c++17 
-        -Wall 
-        -Wextra 
-        -pthread
-    )
-    
-    target_link_libraries(test_occ_focused_integration ${GTEST_LIBRARIES} ${GTEST_MAIN_LIBRARIES} pthread)
-    
-    add_test(NAME test_occ_focused_integration COMMAND test_occ_focused_integration)
+    # NOTE: These tests are disabled because they were written for Aditya's implementation
+    # which uses deptran:: namespace and different APIs (txn_id_t, key_t, Config struct).
+    # Main branch uses Conway's implementation with janus:: namespace and different APIs.
+    # Test files renamed to *_REFERENCE_aditya_impl.cc for documentation purposes.
+    # TODO: Write new tests compatible with janus:: namespace implementation
+    #
+    # add_executable(test_occ_early_abort
+    #     test/test_early_abort.cc
+    #     src/deptran/occ/conflict_graph.cc
+    #     src/deptran/occ/early_abort_detector.cc
+    # )
+    # target_include_directories(test_occ_early_abort PRIVATE
+    #     src
+    #     src/deptran/occ
+    #     ${GTEST_INCLUDE_DIRS}
+    # )
+    # target_compile_options(test_occ_early_abort PRIVATE -std=c++17 -Wall -Wextra -pthread)
+    # target_link_libraries(test_occ_early_abort ${GTEST_LIBRARIES} ${GTEST_MAIN_LIBRARIES} pthread)
+    #
+    # add_test(NAME test_occ_early_abort COMMAND test_occ_early_abort)
+    #
+    # add_executable(test_occ_focused_integration
+    #     test/test_occ_focused_integration.cc
+    #     src/deptran/occ/conflict_graph.cc
+    #     src/deptran/occ/early_abort_detector.cc
+    # )
+    #
+    # target_include_directories(test_occ_focused_integration PRIVATE
+    #     src
+    #     src/deptran/occ
+    # )
+    #
+    # target_compile_options(test_occ_focused_integration PRIVATE
+    #     -std=c++17
+    #     -Wall
+    #     -Wextra
+    #     -pthread
+    # )
+    #
+    # target_link_libraries(test_occ_focused_integration ${GTEST_LIBRARIES} ${GTEST_MAIN_LIBRARIES} pthread)
+    #
+    # add_test(NAME test_occ_focused_integration COMMAND test_occ_focused_integration)
     
     
     
