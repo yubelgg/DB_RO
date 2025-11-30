@@ -325,7 +325,7 @@ void CoordinatorClassic::DispatchAck(phase_t phase,
 void CoordinatorClassic::Prepare() {
   TxData* cmd = (TxData*) cmd_;
   auto mode = Config::GetConfig()->tx_proto_;
-  verify(mode == MODE_OCC || mode == MODE_2PL);
+  verify(mode == MODE_OCC || mode == MODE_OCC_ENHANCED || mode == MODE_2PL);
    
   std::vector<i32> sids;
   for (auto& site : cmd->partition_ids_) {
@@ -442,7 +442,7 @@ void CoordinatorClassic::Commit() {
   it->second = true;
 //  ___TestPhaseThree(cmd_->id_);
   auto mode = Config::GetConfig()->tx_proto_;
-  verify(mode == MODE_OCC || mode == MODE_2PL);
+  verify(mode == MODE_OCC || mode == MODE_OCC_ENHANCED || mode == MODE_2PL);
   Log_debug("send out finish request, cmd_id: %"
                 PRIx64
                 ", %d",
