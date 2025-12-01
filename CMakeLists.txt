@@ -655,6 +655,8 @@ file(GLOB_RECURSE DEPTRAN_SRC
 list(FILTER DEPTRAN_SRC EXCLUDE REGEX "src/deptran/s_main.cc")
 list(FILTER DEPTRAN_SRC EXCLUDE REGEX "src/deptran/paxos_main_helper.cc")
 list(FILTER DEPTRAN_SRC EXCLUDE REGEX "src/bench/paxos_lib/.*")
+# Exclude Phase 0 test files from txlog library (they have their own executables)
+list(FILTER DEPTRAN_SRC EXCLUDE REGEX "src/deptran/.*/test/.*")
 # Slim build: exclude unnecessary protocols
 list(FILTER DEPTRAN_SRC EXCLUDE REGEX "src/deptran/februus/.*")
 list(FILTER DEPTRAN_SRC EXCLUDE REGEX "src/deptran/janus/.*")
@@ -1087,13 +1089,65 @@ if(BUILD_TESTS)
     # target_link_libraries(test_occ_focused_integration ${GTEST_LIBRARIES} ${GTEST_MAIN_LIBRARIES} pthread)
     #
     # add_test(NAME test_occ_focused_integration COMMAND test_occ_focused_integration)
-    
-    
-    
-    
-    
-    
-    
+
+    # Phase 0: Enhanced OCC Unit Tests (janus:: namespace compatible)
+    # ValidationQueue Test
+    add_executable(test_validation_queue_janus
+        src/deptran/occ/test/test_validation_queue_janus.cc
+    )
+    target_include_directories(test_validation_queue_janus PRIVATE
+        src
+        src/rrr
+        src/memdb
+        src/deptran
+        ${CMAKE_CURRENT_SOURCE_DIR}/third-party/rusty-cpp/include
+        dependencies/yaml-cpp/include
+        ${Boost_INCLUDE_DIRS}
+        ${TEST_INCLUDE_DIRS}
+        ${GTEST_INCLUDE_DIRS}
+    )
+    target_compile_options(test_validation_queue_janus PRIVATE ${TEST_COMPILE_OPTIONS})
+    target_link_libraries(test_validation_queue_janus txlog ${GTEST_LIBRARIES} ${GTEST_MAIN_LIBRARIES} pthread)
+    add_test(NAME ValidationQueueTest COMMAND test_validation_queue_janus)
+
+    # EarlyAbortDetector Test
+    add_executable(test_early_abort_detector_janus
+        src/deptran/occ/test/test_early_abort_detector_janus.cc
+    )
+    target_include_directories(test_early_abort_detector_janus PRIVATE
+        src
+        src/rrr
+        src/memdb
+        src/deptran
+        ${CMAKE_CURRENT_SOURCE_DIR}/third-party/rusty-cpp/include
+        dependencies/yaml-cpp/include
+        ${Boost_INCLUDE_DIRS}
+        ${TEST_INCLUDE_DIRS}
+        ${GTEST_INCLUDE_DIRS}
+    )
+    target_compile_options(test_early_abort_detector_janus PRIVATE ${TEST_COMPILE_OPTIONS})
+    target_link_libraries(test_early_abort_detector_janus txlog ${GTEST_LIBRARIES} ${GTEST_MAIN_LIBRARIES} pthread)
+    add_test(NAME EarlyAbortDetectorTest COMMAND test_early_abort_detector_janus)
+
+    # ConflictGraph Test
+    add_executable(test_conflict_graph_janus
+        src/deptran/occ/test/test_conflict_graph_janus.cc
+    )
+    target_include_directories(test_conflict_graph_janus PRIVATE
+        src
+        src/rrr
+        src/memdb
+        src/deptran
+        ${CMAKE_CURRENT_SOURCE_DIR}/third-party/rusty-cpp/include
+        dependencies/yaml-cpp/include
+        ${Boost_INCLUDE_DIRS}
+        ${TEST_INCLUDE_DIRS}
+        ${GTEST_INCLUDE_DIRS}
+    )
+    target_compile_options(test_conflict_graph_janus PRIVATE ${TEST_COMPILE_OPTIONS})
+    target_link_libraries(test_conflict_graph_janus txlog ${GTEST_LIBRARIES} ${GTEST_MAIN_LIBRARIES} pthread)
+    add_test(NAME ConflictGraphTest COMMAND test_conflict_graph_janus)
+
     # Integration tests from CI
     add_test(NAME simpleTransaction COMMAND simpleTransaction)
 
