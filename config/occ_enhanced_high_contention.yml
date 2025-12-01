@@ -1,0 +1,24 @@
+# High Contention Configuration for Enhanced OCC
+#
+# Optimized for workloads with many conflicting transactions
+# Trade-off: More overhead from frequent conflict checks
+#
+# Use when: Hot-spot workloads, shared resource access
+
+mode:
+  cc: occ_enhanced
+
+batch_validation:
+  enabled: true
+  batch_size: 16        # Smaller batches - less wasted work on conflicts
+  num_workers: 8        # Good parallelism
+
+early_abort:
+  enabled: true
+  check_interval: 5     # Detect conflicts quickly to minimize wasted work
+
+# Expected behavior:
+# - Faster detection of doomed transactions
+# - Less wasted work from transactions that will abort
+# - Better overall efficiency under high contention
+

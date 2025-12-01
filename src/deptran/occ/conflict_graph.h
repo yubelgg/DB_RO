@@ -72,7 +72,8 @@ public:
    */
   void Clear();
 
-private:
+protected:
+  // Protected for testing - allows test subclass to set up graph state directly
   // Number of nodes (transactions)
   size_t num_nodes_;
   
@@ -81,6 +82,8 @@ private:
   
   // Adjacency list: tx_index -> set of conflicting tx indices
   std::unordered_map<size_t, std::unordered_set<size_t>> adj_list_;
+
+private:
   
   // Transaction batch (stored for access set analysis)
   std::vector<TxOccEnhanced*> transactions_;

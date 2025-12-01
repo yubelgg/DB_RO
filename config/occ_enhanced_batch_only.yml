@@ -1,0 +1,32 @@
+# Enhanced OCC Configuration - Batch Validation Only
+# This config enables only batch validation (no early abort detection)
+# Useful for ablation testing to measure the impact of batch validation alone
+#
+# Usage: ./build/labtest -f config/occ_enhanced_batch_only.yml
+#        ./build/dbtest -f config/occ_enhanced_batch_only.yml
+#
+# Features:
+#   - Parallel batch validation: ENABLED
+#   - Early abort detection: DISABLED
+
+mode:
+  cc: occ_enhanced    # Enhanced OCC concurrency control
+  ab: none            # No atomic broadcast (single node)
+  read_only: occ_enhanced
+  batch: false
+  retry: 20
+  ongoing: 1
+
+# Batch Validation Configuration
+batch_validation:
+  enabled: true
+  batch_size: 32          # Maximum transactions per batch
+  batch_timeout_us: 100   # Maximum wait time for batch (microseconds)
+  num_workers: 8          # Number of parallel validation worker threads
+
+# Early Abort Detection Configuration - DISABLED
+early_abort:
+  enabled: false
+  check_interval: 10      # Ignored when disabled
+  bloom_filter_size: 0    # No bloom filter needed
+

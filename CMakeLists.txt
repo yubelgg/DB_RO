@@ -1148,6 +1148,82 @@ if(BUILD_TESTS)
     target_link_libraries(test_conflict_graph_janus txlog ${GTEST_LIBRARIES} ${GTEST_MAIN_LIBRARIES} pthread)
     add_test(NAME ConflictGraphTest COMMAND test_conflict_graph_janus)
 
+    # BloomFilter Test
+    add_executable(test_bloom_filter_janus
+        src/deptran/occ/test/test_bloom_filter_janus.cc
+    )
+    target_include_directories(test_bloom_filter_janus PRIVATE
+        src
+        src/rrr
+        src/memdb
+        src/deptran
+        ${CMAKE_CURRENT_SOURCE_DIR}/third-party/rusty-cpp/include
+        dependencies/yaml-cpp/include
+        ${Boost_INCLUDE_DIRS}
+        ${TEST_INCLUDE_DIRS}
+        ${GTEST_INCLUDE_DIRS}
+    )
+    target_compile_options(test_bloom_filter_janus PRIVATE ${TEST_COMPILE_OPTIONS})
+    target_link_libraries(test_bloom_filter_janus ${GTEST_LIBRARIES} ${GTEST_MAIN_LIBRARIES} pthread)
+    add_test(NAME BloomFilterTest COMMAND test_bloom_filter_janus)
+
+    # ConcurrentMap Test
+    add_executable(test_concurrent_map_janus
+        src/deptran/occ/test/test_concurrent_map_janus.cc
+    )
+    target_include_directories(test_concurrent_map_janus PRIVATE
+        src
+        src/rrr
+        src/memdb
+        src/deptran
+        ${CMAKE_CURRENT_SOURCE_DIR}/third-party/rusty-cpp/include
+        dependencies/yaml-cpp/include
+        ${Boost_INCLUDE_DIRS}
+        ${TEST_INCLUDE_DIRS}
+        ${GTEST_INCLUDE_DIRS}
+    )
+    target_compile_options(test_concurrent_map_janus PRIVATE ${TEST_COMPILE_OPTIONS})
+    target_link_libraries(test_concurrent_map_janus ${GTEST_LIBRARIES} ${GTEST_MAIN_LIBRARIES} pthread)
+    add_test(NAME ConcurrentMapTest COMMAND test_concurrent_map_janus)
+
+    # BatchValidator Test
+    add_executable(test_batch_validator_janus
+        src/deptran/occ/test/test_batch_validator_janus.cc
+    )
+    target_include_directories(test_batch_validator_janus PRIVATE
+        src
+        src/rrr
+        src/memdb
+        src/deptran
+        ${CMAKE_CURRENT_SOURCE_DIR}/third-party/rusty-cpp/include
+        dependencies/yaml-cpp/include
+        ${Boost_INCLUDE_DIRS}
+        ${TEST_INCLUDE_DIRS}
+        ${GTEST_INCLUDE_DIRS}
+    )
+    target_compile_options(test_batch_validator_janus PRIVATE ${TEST_COMPILE_OPTIONS})
+    target_link_libraries(test_batch_validator_janus txlog ${GTEST_LIBRARIES} ${GTEST_MAIN_LIBRARIES} pthread)
+    add_test(NAME BatchValidatorTest COMMAND test_batch_validator_janus)
+
+    # SchedulerEnhanced Test
+    add_executable(test_scheduler_enhanced_janus
+        src/deptran/occ/test/test_scheduler_enhanced_janus.cc
+    )
+    target_include_directories(test_scheduler_enhanced_janus PRIVATE
+        src
+        src/rrr
+        src/memdb
+        src/deptran
+        ${CMAKE_CURRENT_SOURCE_DIR}/third-party/rusty-cpp/include
+        dependencies/yaml-cpp/include
+        ${Boost_INCLUDE_DIRS}
+        ${TEST_INCLUDE_DIRS}
+        ${GTEST_INCLUDE_DIRS}
+    )
+    target_compile_options(test_scheduler_enhanced_janus PRIVATE ${TEST_COMPILE_OPTIONS})
+    target_link_libraries(test_scheduler_enhanced_janus txlog ${GTEST_LIBRARIES} ${GTEST_MAIN_LIBRARIES} pthread)
+    add_test(NAME SchedulerEnhancedTest COMMAND test_scheduler_enhanced_janus)
+
     # Integration tests from CI
     add_test(NAME simpleTransaction COMMAND simpleTransaction)
 

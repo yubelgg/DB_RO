@@ -1,0 +1,32 @@
+# Enhanced OCC Configuration - Early Abort Detection Only
+# This config enables only early abort detection (no batch validation)
+# Useful for ablation testing to measure the impact of early abort detection alone
+#
+# Usage: ./build/labtest -f config/occ_enhanced_early_abort_only.yml
+#        ./build/dbtest -f config/occ_enhanced_early_abort_only.yml
+#
+# Features:
+#   - Parallel batch validation: DISABLED (uses serial validation)
+#   - Early abort detection: ENABLED
+
+mode:
+  cc: occ_enhanced    # Enhanced OCC concurrency control
+  ab: none            # No atomic broadcast (single node)
+  read_only: occ_enhanced
+  batch: false
+  retry: 20
+  ongoing: 1
+
+# Batch Validation Configuration - DISABLED (serial validation)
+batch_validation:
+  enabled: false
+  batch_size: 1           # Single transaction at a time
+  batch_timeout_us: 0     # No batching timeout
+  num_workers: 0          # No worker threads
+
+# Early Abort Detection Configuration
+early_abort:
+  enabled: true
+  check_interval: 10      # Check for abort every N operations
+  bloom_filter_size: 10000  # Size of bloom filter for conflict pre-filtering
+

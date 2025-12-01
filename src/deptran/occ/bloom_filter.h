@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <cmath>
 #include <atomic>
+#include <memory>
 
 namespace janus {
 
@@ -59,8 +60,8 @@ public:
     if (num_hashes_ == 0) num_hashes_ = 1;
     
     // Initialize bit array (use bytes, access individual bits)
-    size_t num_bytes = (num_bits_ + 7) / 8;
-    bits_.resize(num_bytes, 0);
+    num_bytes_ = (num_bits_ + 7) / 8;
+    bits_ = std::unique_ptr<std::atomic<uint8_t>[]>(new std::atomic<uint8_t>[num_bytes_]());
   }
   
   /**
@@ -76,8 +77,8 @@ public:
     
     if (num_hashes_ == 0) num_hashes_ = 1;
     
-    size_t num_bytes = (num_bits_ + 7) / 8;
-    bits_.resize(num_bytes, 0);
+    num_bytes_ = (num_bits_ + 7) / 8;
+    bits_ = std::unique_ptr<std::atomic<uint8_t>[]>(new std::atomic<uint8_t>[num_bytes_]());
   }
   
   /**
@@ -110,8 +111,8 @@ public:
    * Clear all elements from the filter
    */
   void Clear() {
-    for (auto& byte : bits_) {
-      byte.store(0, std::memory_order_relaxed);
+    for (size_t i = 0; i < num_bytes_; i++) {
+      bits_[i].store(0, std::memory_order_relaxed);
     }
     num_elements_.store(0, std::memory_order_relaxed);
   }
@@ -156,14 +157,15 @@ public:
    * Get memory usage in bytes
    */
   size_t MemoryUsage() const {
-    return bits_.size() * sizeof(std::atomic<uint8_t>);
+    return num_bytes_ * sizeof(std::atomic<uint8_t>);
   }
 
 private:
-  size_t num_bits_;                          // Total number of bits
-  size_t num_hashes_;                        // Number of hash functions
-  std::atomic<size_t> num_elements_;         // Number of elements added
-  std::vector<std::atomic<uint8_t>> bits_;   // Bit array (thread-safe)
+  size_t num_bits_;                                      // Total number of bits
+  size_t num_hashes_;                                    // Number of hash functions
+  size_t num_bytes_;                                     // Number of bytes in the array
+  std::atomic<size_t> num_elements_;                     // Number of elements added
+  std::unique_ptr<std::atomic<uint8_t>[]> bits_;         // Bit array (thread-safe)
   
   /**
    * Hash function combining element hash with seed

@@ -1,0 +1,24 @@
+# Low Latency Configuration for Enhanced OCC
+#
+# Optimized for fast response time per transaction
+# Trade-off: May have lower overall throughput
+#
+# Use when: Interactive applications, real-time systems
+
+mode:
+  cc: occ_enhanced
+
+batch_validation:
+  enabled: true
+  batch_size: 16        # Smaller batches for faster turnover
+  num_workers: 8        # Good parallelism without overhead
+
+early_abort:
+  enabled: true
+  check_interval: 5     # More frequent checks for faster abort detection
+
+# Expected behavior:
+# - Lower individual transaction latency
+# - Faster response times
+# - May have slightly lower overall throughput
+

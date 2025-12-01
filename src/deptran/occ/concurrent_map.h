@@ -5,6 +5,7 @@
 #include <vector>
 #include <functional>
 #include <optional>
+#include <memory>
 
 namespace janus {
 
@@ -33,7 +34,7 @@ public:
   
   ConcurrentMap() {
     shards_.resize(NUM_SHARDS);
-    mutexes_.resize(NUM_SHARDS);
+    mutexes_ = std::unique_ptr<std::mutex[]>(new std::mutex[NUM_SHARDS]);
   }
   
   ~ConcurrentMap() = default;
@@ -226,7 +227,7 @@ private:
   std::vector<std::unordered_map<K, V>> shards_;
   
   // Per-shard mutexes (mutable for const methods)
-  mutable std::vector<std::mutex> mutexes_;
+  mutable std::unique_ptr<std::mutex[]> mutexes_;
   
   /**
    * Get shard index for a key using hash function

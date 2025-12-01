@@ -1,0 +1,24 @@
+# High Throughput Configuration for Enhanced OCC
+# 
+# Optimized for maximum transactions per second
+# Trade-off: Higher latency per individual transaction
+#
+# Use when: Batch processing, bulk operations, high-volume workloads
+
+mode:
+  cc: occ_enhanced
+
+batch_validation:
+  enabled: true
+  batch_size: 64        # Larger batches for better parallelism
+  num_workers: 16       # More workers for parallel validation
+
+early_abort:
+  enabled: true
+  check_interval: 20    # Less frequent checks, lower overhead
+
+# Expected behavior:
+# - Higher overall throughput
+# - Larger batches mean more work done per validation cycle
+# - May have slightly higher individual transaction latency
+
