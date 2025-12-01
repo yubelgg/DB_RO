@@ -1,490 +1,195 @@
-# Enhanced OCC Team Work Distribution
+# Enhanced OCC: 2-Week Testing & Evaluation Plan
 
-**Status**: Step 1 Complete (Skeleton classes merged)
-**Current Goal**: Parallel development of Step 2-4 components
-
----
-
-## ✅ Can Start NOW (Fully Independent Work)
-
-These components have **no dependencies** on enhanced OCC logic and can be implemented, tested, and merged immediately.
-
-### 1. Data Structures (Person A - 6-8 hours total)
-
-**Files to create in `src/deptran/occ/`:**
-
-#### `batch_metadata.h` (15 minutes)
-
-```cpp
-// Simple struct definitions - no implementation needed
-struct BatchMetadata {
-  size_t batch_id;
-  size_t position_in_batch;
-  // ... timestamps, validation results
-};
-
-enum class ConflictType {
-  READ_WRITE,
-  WRITE_READ,
-  WRITE_WRITE
-};
-```
-
-**Deliverable**: Header-only file with struct definitions
-
-#### `bloom_filter.h` (2-3 hours)
-
-```cpp
-// Template class for probabilistic set membership testing
-template<typename T>
-class BloomFilter {
-  void Add(const T& element);
-  bool MayContain(const T& element) const;
-  // ... hash functions, bit array
-};
-```
-
-**Deliverable**: Header-only template + unit tests
-**Reference**: Standard Bloom filter algorithm (Wikipedia, textbooks)
-
-#### `concurrent_map.h` (2-3 hours)
-
-```cpp
-// Thread-safe hash map using sharding (256 shards)
-template<typename K, typename V>
-class ConcurrentMap {
-  void Insert(const K& key, const V& value);
-  bool TryGet(const K& key, V& value) const;
-  void Remove(const K& key);
-  // ... per-shard locks
-};
-```
-
-**Deliverable**: Header-only template + unit tests
-**Pattern**: Sharded hash map with per-shard mutexes
-
-**Tests to write**:
-
-- `test/test_bloom_filter.cc` - False positive rate, no false negatives
-- `test/test_concurrent_map.cc` - Thread safety, correctness
+**Status**: Implementation Complete ✅ | Testing Phase Started
+**Deadline**: 2 weeks (Dec 13, 2025)
+**Team**: 3 people working in parallel
 
 ---
 
-### 2. Validation Queue (Person B - 3-4 hours)
+## 👤 Person 1: Testing Infrastructure
 
-**Files to create:**
+**Week 1 Focus**: Write all unit tests
+**Week 2 Focus**: Performance tuning and optimization
 
-#### `src/deptran/occ/validation_queue.h/cc`
+### Week 1 Tasks (30-35 hours)
 
-```cpp
-class ValidationQueue {
-public:
-  void Enqueue(TxOccEnhanced* tx);
-  std::vector<TxOccEnhanced*> DequeueBatch(size_t max_size,
-                                            std::chrono::microseconds timeout);
-  bool HasBatch(size_t min_size) const;
-  size_t Size() const;
-private:
-  std::mutex mutex_;
-  std::condition_variable cv_;
-  std::deque<TxOccEnhanced*> queue_;
-};
-```
+**Day 1-2: Data Structure Tests** (10h)
 
-**Implementation notes**:
+- [ ] `test/test_bloom_filter_janus.cc` - BloomFilter tests
+- [ ] `test/test_concurrent_map_janus.cc` - ConcurrentMap tests
+- [ ] `test/test_validation_queue_janus.cc` - ValidationQueue tests
 
-- Thread-safe with mutex + condition variable
-- `DequeueBatch()` blocks until batch ready OR timeout
-- Returns early if queue has enough transactions
+**Day 3-4: Algorithm Tests** (8h)
 
-**Deliverable**: Working queue + unit tests
-**Reference**: Standard producer-consumer queue pattern
+- [ ] `test/test_conflict_graph_janus.cc` - ConflictGraph tests
+  - Build(), FindIndependentSets(), TopologicalSort()
 
-**Tests to write**:
+**Day 5: Detector Tests** (6h)
 
-- `test/test_validation_queue.cc` - Thread safety, timeout behavior, batch size
+- [ ] `test/test_early_abort_detector_janus.cc` - EarlyAbortDetector tests
 
----
+**Day 6-7: Integration Tests** (10h)
 
-### 3. Conflict Graph (Person C - 4-6 hours)
+- [ ] `test/test_batch_validator_janus.cc` - BatchValidator tests
+- [ ] `test/test_scheduler_enhanced_janus.cc` - SchedulerEnhanced tests
 
-**Files to create:**
+**Deliverables**: 7 test files, all passing, CMakeLists.txt updated
 
-#### `src/deptran/occ/conflict_graph.h/cc`
+### Week 2 Tasks (30-35 hours)
 
-```cpp
-class ConflictGraph {
-public:
-  static ConflictGraph Build(const std::vector<TxOccEnhanced*>& transactions);
-  void AddConflict(txnid_t from, txnid_t to, ConflictType type);
-  std::vector<std::vector<txnid_t>> FindIndependentSets();
-  std::vector<txnid_t> TopologicalSort();
-  bool HasCycle();
-private:
-  std::unordered_map<txnid_t, std::set<txnid_t>> adjacency_list_;
-};
-```
+**Parameter Tuning**:
 
-**Algorithms needed**:
+- [ ] Day 1-2: Optimize batch_size (8, 16, 32, 64, 128)
+- [ ] Day 3: Optimize batch_timeout_us (10, 50, 100, 200, 500)
+- [ ] Day 4: Optimize num_workers (1, 2, 4, 8, 16, 32)
+- [ ] Day 5: Optimize check_interval (1, 5, 10, 20, 50)
+- [ ] Day 6-7: Create optimized configs, document recommendations
 
-1. **FindIndependentSets()**: Greedy graph coloring
-2. **TopologicalSort()**: Kahn's algorithm or DFS-based
-3. **HasCycle()**: DFS with back-edge detection
-
-**Deliverable**: Graph algorithms + unit tests
-**Reference**: Standard graph algorithms textbook
-
-**Tests to write**:
-
-- `test/test_conflict_graph.cc` - Graph construction, coloring, topological sort
-
-**Note**: Can test with mock transaction data (doesn't need real OCC transactions yet)
+**Deliverables**: Tuning report, optimal config files
 
 ---
 
-### 4. Configuration Files (Person D - 1 hour)
+## 👤 Person 2: Integration Testing & Benchmarking
 
-**Files to create in `config/`:**
+**Week 1 Focus**: Verify correctness, create configs
+**Week 2 Focus**: Run full benchmark suite
 
-#### `occ_enhanced.yml`
+### Week 1 Tasks (30-35 hours)
 
-```yaml
-mode: occ_enhanced
+**Day 1-2: Simple Workloads** (10h)
 
-batch_validation:
-  enabled: true
-  batch_size: 32
-  batch_timeout_us: 100
-  num_workers: 8
+- [ ] Create `test/simple_workloads/` directory
+- [ ] Write single_transaction.yml
+- [ ] Write two_conflicting.yml
+- [ ] Write two_independent.yml
+- [ ] Write batch_of_8.yml, batch_of_32_conflicting.yml
+- [ ] Verify correctness vs baseline OCC
 
-early_abort:
-  enabled: true
-  check_interval: 10
-  bloom_filter_size: 10000
-  bloom_filter_hashes: 3
+**Day 3-4: Config Files** (10h)
 
-version_cache:
-  enabled: true
-  size: 10000
+- [ ] Test existing 4 configs (occ*integration*\*.yml)
+- [ ] Create config/occ_enhanced_both.yml
+- [ ] Create config/occ_enhanced_batch_only.yml
+- [ ] Create config/occ_enhanced_abort_only.yml
+- [ ] Create config/occ_baseline_comparison.yml
 
-monitoring:
-  track_abort_reasons: true
-  track_batch_metrics: true
-  track_validation_latency: true
-```
+**Day 5-7: Integration Tests** (10h)
 
-#### `occ_enhanced_batch_only.yml`
+- [ ] Write `test/test_occ_enhanced_integration.cc`
+  - SingleTransactionCommits test
+  - ConflictingTransactionsSerializable test
+  - BatchValidationCorrectness test
+  - EarlyAbortReducesWastedWork test
+  - NoDeadlocks test
+  - MatchesBaselineResults test
 
-```yaml
-# Same as above but early_abort.enabled: false
-```
+**Deliverables**: Simple workloads, 8 config files, integration test suite
 
-#### `occ_enhanced_early_abort_only.yml`
+### Week 2 Tasks (30-35 hours)
 
-```yaml
-# Same as above but batch_validation.enabled: false
-```
+**Benchmarking**:
 
-**Deliverable**: 3 configuration files for different modes
+- [ ] Day 1-2: TPC-C suite (1, 2, 4, 8, 16 warehouses)
+- [ ] Day 3: Ablation study (baseline, batch-only, abort-only, both)
+- [ ] Day 4-5: Stress testing (max throughput, failure scenarios, stability)
+- [ ] Day 6-7: Organize results, create tables/graphs
 
----
-
-### 5. Test Infrastructure (Person E - 3-4 hours)
-
-**Directory structure to create:**
-
-```
-src/deptran/occ/test/
-├── test_batch_validation.cc
-├── test_early_abort.cc
-├── test_conflict_graph.cc
-└── CMakeLists.txt (if needed)
-```
-
-**Benchmark scripts in `benchmark/`:**
-
-#### `occ_comparison.py`
-
-```python
-# Run same workload with baseline vs enhanced OCC
-# Compare throughput, latency, abort rate
-```
-
-#### `contention_test.py`
-
-```python
-# Vary TPC-C warehouses to control contention
-# Measure performance at different conflict rates
-```
-
-#### `plot_results.py`
-
-```python
-# Generate graphs from benchmark results
-```
-
-**Deliverable**: Test framework + benchmark scripts (can use mock data initially)
+**Deliverables**: Complete benchmark results, all graphs/tables, raw data
 
 ---
 
-## 🔄 Can Start with Stubs (Interface Design)
+## 👤 Person 3: Benchmarking Infrastructure & Documentation
 
-These need the core logic eventually, but **interfaces can be defined now** so others can code against them.
+**Week 1 Focus**: Build benchmark framework, collect baseline
+**Week 2 Focus**: Write evaluation report and all documentation
 
-### 6. Batch Validator Skeleton (Person A/B - 2 hours)
+### Week 1 Tasks (30-35 hours)
 
-**Files to create:**
+**Day 1-2: Benchmark Scripts** (12h)
 
-#### `src/deptran/occ/batch_validator.h`
+- [ ] Write `benchmark/occ_benchmark.py` - Run workloads, measure metrics
+- [ ] Write `benchmark/compare_occ.py` - Compare baseline vs enhanced
+- [ ] Write `benchmark/contention_sweep.py` - Test different contention levels
+- [ ] Write `benchmark/plot_results.py` - Visualization functions
 
-```cpp
-class BatchValidator {
-public:
-  BatchValidator(size_t batch_size, std::chrono::microseconds timeout,
-                 int num_workers);
+**Day 3-4: Baseline Measurements** (10h)
 
-  // To be implemented later - just define signatures now
-  void AddTransaction(TxOccEnhanced* tx);
-  BatchValidationResult ValidateBatch();
-  void ValidateInParallel(std::vector<TxOccEnhanced*>& batch);
+- [ ] Collect baseline: 1, 2, 4, 8, 16 warehouse TPC-C
+- [ ] Measure: throughput, latency (P50/P95/P99), abort rate
+- [ ] Save all results
 
-private:
-  std::vector<std::unique_ptr<ValidationWorker>> workers_;
-  size_t batch_size_threshold_;
-  std::chrono::microseconds batch_timeout_;
-};
-```
+**Day 5-7: Visualization Tools** (8h)
 
-#### `src/deptran/occ/batch_validator.cc`
+- [ ] Implement plotting functions (throughput, latency CDF, abort rates)
+- [ ] Create initial baseline graphs
 
-```cpp
-// Empty implementations for now
-void BatchValidator::AddTransaction(TxOccEnhanced* tx) {
-  // TODO: Implement in Step 2
-}
+**Deliverables**: Benchmark framework, baseline measurements, visualization tools
 
-BatchValidationResult BatchValidator::ValidateBatch() {
-  // TODO: Implement in Step 3
-  return BatchValidationResult{};
-}
-```
+### Week 2 Tasks (30-35 hours)
 
-**Deliverable**: Class skeleton with method signatures
+**Documentation**:
+
+- [ ] Day 1-2: Analyze all results (throughput, abort rate, latency, scalability)
+- [ ] Day 3-4: Write `doc/evaluation_report.md` (15-20 pages)
+  - Executive summary, methodology, results, discussion, conclusion
+- [ ] Day 5-6: Update PLANNER.md, progress.md, create usage_guide.md, testing_guide.md
+- [ ] Day 7: Create presentation slides, update README
+
+**Deliverables**: Evaluation report, updated docs, presentation slides
 
 ---
 
-### 7. Early Abort Detector Skeleton (Person C/D - 2 hours)
+## Success Criteria
 
-**Files to create:**
+**Week 1 Checkpoint**:
 
-#### `src/deptran/occ/early_abort_detector.h`
+- ✅ All unit tests pass
+- ✅ Integration tests verify correctness
+- ✅ Baseline measurements collected
+- ✅ Benchmark framework working
 
-```cpp
-class EarlyAbortDetector {
-public:
-  void RegisterRead(txnid_t tx_id, Row* row, colid_t col_id, version_t version);
-  void RegisterWrite(txnid_t tx_id, Row* row, colid_t col_id);
-  void NotifyVersionChange(Row* row, colid_t col_id, version_t new_version);
-  bool ShouldAbort(txnid_t tx_id);
-  void UnregisterTransaction(txnid_t tx_id);
+**Week 2 Completion**:
 
-private:
-  ConcurrentMap<RowColumn, std::set<TxVersionPair>> active_reads_;
-  ConcurrentMap<RowColumn, std::set<txnid_t>> active_writes_;
-  std::atomic<std::set<txnid_t>> aborted_txns_;
-};
-```
-
-#### `src/deptran/occ/early_abort_detector.cc`
-
-```cpp
-// Empty implementations for now
-void EarlyAbortDetector::RegisterRead(...) {
-  // TODO: Implement in Step 4
-}
-
-bool EarlyAbortDetector::ShouldAbort(txnid_t tx_id) {
-  // TODO: Implement in Step 4
-  return false;
-}
-```
-
-**Deliverable**: Class skeleton with API defined
+- ✅ Full benchmark suite complete
+- ✅ Performance goals demonstrated (40-60% abort reduction, 2-5× throughput)
+- ✅ Evaluation report complete
+- ✅ All documentation updated
 
 ---
 
-## 🚫 Must Wait for Core Logic
+## Communication
 
-**DO NOT start these yet** - they require understanding the full OCC flow:
+**Daily Standup**: 15 min/day
 
-### Requires Core Logic:
+1. What did I complete?
+2. What am I working on today?
+3. Any blockers?
 
-1. ❌ Actual validation logic in `BatchValidator::ValidateBatch()`
-2. ❌ Actual conflict detection in `EarlyAbortDetector::NotifyVersionChange()`
-3. ❌ Modifying `SchedulerOccEnhanced::DoPrepare()` to use validation queue
-4. ❌ Modifying `TxOccEnhanced::ReadColumn/WriteColumn()` to register accesses
-5. ❌ Integration between scheduler, validator, and detector
+**Sync Points**:
 
-**These are Step 2-4 work** and require coordination.
-
----
-
-## 📋 Suggested Work Distribution
-
-### Option 1: By Component (5 People)
-
-```
-Person A: Data structures (batch_metadata, bloom_filter, concurrent_map)
-         Time: 6-8 hours
-         Skills: Template programming, data structures
-
-Person B: Validation queue + batch validator skeleton
-         Time: 5-6 hours
-         Skills: Threading, synchronization
-
-Person C: Conflict graph + early abort detector skeleton
-         Time: 6-8 hours
-         Skills: Graph algorithms
-
-Person D: Configuration files + test infrastructure setup
-         Time: 4-5 hours
-         Skills: YAML, testing frameworks
-
-Person E: Benchmark scripts + documentation
-         Time: 4-5 hours
-         Skills: Python, testing
-```
-
-### Option 2: By Priority (Smaller Team)
-
-```
-Week 1 (Everyone):
-- Person 1: bloom_filter.h + concurrent_map.h
-- Person 2: validation_queue.h/cc
-- Person 3: conflict_graph.h/cc
-- Everyone: Review each other's PRs
-
-Week 2 (Everyone):
-- Integrate components
-- Start Step 2 together (batch validation logic)
-```
+- Dec 3 (Day 3): Review test results
+- Dec 6 (End Week 1): Integration check
+- Dec 10 (Day 3 Week 2): Review benchmarks
+- Dec 13 (End Week 2): Final review
 
 ---
 
-## 🎯 Immediate Action Items (This Week)
+## Getting Started
 
-**Priority 1 (Can merge ASAP):**
+1. **Create your branch**:
 
-1. ✅ Create `batch_metadata.h` (15 min)
-2. ✅ Create `bloom_filter.h` + tests (3 hours)
-3. ✅ Create `concurrent_map.h` + tests (3 hours)
+   ```bash
+   git checkout -b feature/testing-yourname      # Person 1
+   git checkout -b feature/benchmarking-yourname # Person 2
+   git checkout -b feature/evaluation-yourname   # Person 3
+   ```
 
-**Priority 2 (End of week):** 4. ✅ Create `validation_queue.h/cc` + tests (4 hours) 5. ✅ Create `conflict_graph.h/cc` + tests (6 hours)
+2. **Start your Week 1 Day 1 tasks immediately** - all tasks are independent!
 
-**Priority 3 (Start of next week):** 6. ✅ Create all config YAML files (1 hour) 7. ✅ Set up test directory structure (30 min) 8. ✅ Create batch_validator.h skeleton (1 hour) 9. ✅ Create early_abort_detector.h skeleton (1 hour)
-
----
-
-## 📦 Suggested First PRs
-
-### PR #1: "Add Enhanced OCC Data Structures"
-
-**Branch**: `feature/enhanced-occ-data-structures`
-
-**Files**:
-
-- `src/deptran/occ/batch_metadata.h`
-- `src/deptran/occ/bloom_filter.h`
-- `src/deptran/occ/concurrent_map.h`
-- `test/test_bloom_filter.cc`
-- `test/test_concurrent_map.cc`
-
-**Can merge**: Immediately (no dependencies)
+3. **Check in daily** - 15 minutes keeps everyone aligned
 
 ---
 
-### PR #2: "Add Validation Queue"
-
-**Branch**: `feature/enhanced-occ-validation-queue`
-
-**Files**:
-
-- `src/deptran/occ/validation_queue.h/cc`
-- `test/test_validation_queue.cc`
-
-**Can merge**: After PR #1 (needs ConcurrentMap)
-
----
-
-### PR #3: "Add Conflict Graph"
-
-**Branch**: `feature/enhanced-occ-conflict-graph`
-
-**Files**:
-
-- `src/deptran/occ/conflict_graph.h/cc`
-- `test/test_conflict_graph.cc`
-
-**Can merge**: Immediately (no dependencies)
-
----
-
-### PR #4: "Add Component Skeletons and Configs"
-
-**Branch**: `feature/enhanced-occ-skeletons`
-
-**Files**:
-
-- `src/deptran/occ/batch_validator.h/cc` (skeleton)
-- `src/deptran/occ/early_abort_detector.h/cc` (skeleton)
-- `config/occ_enhanced*.yml` (all 3 configs)
-
-**Can merge**: After PR #1, #2, #3 (references their types)
-
----
-
-## 🔗 Integration Plan
-
-**After all independent components are merged:**
-
-### Week 3-4: Integrate Components (Coordinated Work)
-
-1. Implement actual validation logic in `BatchValidator`
-2. Implement actual abort detection in `EarlyAbortDetector`
-3. Wire up `SchedulerOccEnhanced::DoPrepare()` to use validator
-4. Wire up `TxOccEnhanced` to use detector
-
-**This is when the team needs to work together on the core logic.**
-
----
-
-## 📝 Notes
-
-- **All independent work can happen in parallel**
-- **Merge frequently** - small PRs are easier to review
-- **Write tests first** - use mock data where needed
-- **Reference PLANNER.md** for detailed design
-- **Ask questions early** - use PR comments for design discussion
-
----
-
-## ✅ Progress Tracking
-
-Update this section as components are completed:
-
-- [ ] batch_metadata.h
-- [ ] bloom_filter.h + tests
-- [ ] concurrent_map.h + tests
-- [ ] validation_queue.h/cc + tests
-- [ ] conflict_graph.h/cc + tests
-- [ ] config files (3 files)
-- [ ] batch_validator.h skeleton
-- [ ] early_abort_detector.h skeleton
-- [ ] test infrastructure setup
-- [ ] benchmark scripts
-
----
-
-**Questions?** Check PLANNER.md or ask in team chat/PR comments.
-
-**Last Updated**: Step 1 complete, ready for parallel development
+**Last Updated**: 2025-11-29
+**Phase**: Testing & Evaluation (Weeks 1-2)
+**Next Deadline**: Dec 13, 2025

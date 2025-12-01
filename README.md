@@ -8,6 +8,8 @@ Read [PLANNER.md](PLANNER.md) for a more detailed info on the project
 
 Read [progress.md](doc/progress.md) for a more detailed on the progress of the project and what is being worked on
 
+Read [team_work](TEAM_WORK.md) for more info on team work distribution
+
 ## Lab Assignments
 
 - **Lab 1** - Replicated State Machine (Raft Consensus)

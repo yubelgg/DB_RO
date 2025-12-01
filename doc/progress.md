@@ -1298,6 +1298,165 @@ These features are documented in the plan file for potential future integration.
 
 ---
 
-**Last Updated**: 2025-11-29
-**Current Step**: Steps 1-4 Complete, Test infrastructure integrated ✅
-**Next Step**: Write janus:: compatible tests, run benchmarks
+## Session 4: Pre-Testing Verification & Critical Bug Discovery
+
+### Date: 2025-11-30
+
+### Summary
+
+Before starting the planned 2-week testing phase, a thorough verification was conducted to ensure the Enhanced OCC implementation was truly ready for testing. This revealed **5 critical runtime bugs** that would cause immediate crashes, as well as missing test infrastructure.
+
+---
+
+### Critical Discovery: Implementation Complete BUT Bugs Found
+
+**What Was Verified:**
+- ✅ All 2,852 lines of implementation code complete (Steps 1-4)
+- ✅ All methods fully implemented (no stubs or TODOs)
+- ✅ Proper thread safety and code quality
+- ✅ Framework integration (MODE_OCC_ENHANCED registered)
+- ✅ Code compiles successfully
+
+**What Was Missing:**
+- ❌ 5 critical runtime bugs in framework integration
+- ❌ Zero unit tests for janus:: implementation
+- ⚠️ Missing 3 standard config files
+
+---
+
+### Priority 0: Critical Runtime Bugs Fixed (30 minutes)
+
+**All 5 bugs would cause Enhanced OCC to crash on first transaction:**
+
+**Bug 1 & 2: Coordinator Verify Statements**
+- **File:** `src/deptran/classic/coordinator.cc` (lines 328, 445)
+- **Problem:** `verify(mode == MODE_OCC || mode == MODE_2PL);` crashes on MODE_OCC_ENHANCED
+- **Fix:** Added `|| mode == MODE_OCC_ENHANCED` to both verify statements
+- **Impact:** Coordinator Prepare() and Commit() would crash immediately
+
+**Bug 3: OCC_LAZY Policy Not Set**
+- **File:** `src/deptran/scheduler.cc` (line 128)
+- **Problem:** `if (mode == MODE_OCC || mode == MODE_MDCC)` doesn't include MODE_OCC_ENHANCED
+- **Fix:** Added `|| mode == MODE_OCC_ENHANCED` condition
+- **Impact:** Enhanced OCC wouldn't use lazy version incrementing (critical for correctness)
+
+**Bug 4: Wrong Transaction Manager**
+- **File:** `src/deptran/scheduler.cc` (line 224)
+- **Problem:** Missing `case MODE_OCC_ENHANCED:` in switch statement
+- **Fix:** Added MODE_OCC_ENHANCED case to get TxnMgrOCC
+- **Impact:** Would use wrong transaction manager (breaks OCC entirely)
+
+**Bug 5: Marshal Stage Missing Case**
+- **File:** `src/deptran/scheduler.cc` (line 185)
+- **Problem:** Missing `case MODE_OCC_ENHANCED:` in marshal switch
+- **Fix:** Added MODE_OCC_ENHANCED case
+- **Impact:** Potential crash during transaction marshaling
+
+**Verification:**
+- All fixes applied to 2 files (coordinator.cc, scheduler.cc)
+- Code recompiled successfully
+- Committed: `060ebaa` - "fix: add MODE_OCC_ENHANCED to framework integration points"
+
+---
+
+### Phase 0 Plan: Minimal Test Infrastructure Required
+
+**Discovery:** Existing test files from Aditya's branch use incompatible `deptran::` namespace. Zero working tests exist for the `janus::` implementation.
+
+**Missing Tests (7 files):**
+1. `test/test_validation_queue_janus.cc` - Thread safety, timeout batching
+2. `test/test_batch_validator_janus.cc` - Serial/parallel validation
+3. `test/test_conflict_graph_janus.cc` - Graph building, coloring, topo sort
+4. `test/test_early_abort_detector_janus.cc` - Conflict detection
+5. `test/test_bloom_filter_janus.cc` - Hash functions, false positives
+6. `test/test_concurrent_map_janus.cc` - Thread-safe sharding
+7. `test/test_scheduler_enhanced_janus.cc` - End-to-end integration
+
+**Recommendation:** Add Phase 0 (2-3 days) before 2-week testing plan:
+- Person 1 writes minimal test suite (3-4 test files minimum)
+- Verify basic correctness before investing in full benchmarks
+- Person 2 & 3 do prep work or wait
+
+---
+
+### Revised Timeline
+
+**Original Plan:** Start 2-week testing immediately
+
+**Revised Plan:**
+1. ✅ **Priority 0 (30 min):** Fix 5 critical bugs - COMPLETE
+2. **Phase 0 (2-3 days):** Write minimal test infrastructure - NEXT
+3. **Phase 1 (2 weeks):** Execute original testing/evaluation plan
+
+**Total Timeline:** ~16-17 days (instead of 14 days)
+
+---
+
+### Documentation Updates
+
+**Files Updated:**
+- **PLANNER.md:** Added "Current Focus: Testing & Evaluation Phase" section
+- **TEAM_WORK.md:** Complete rewrite with 2-week testing plan
+  - Removed all completed implementation tasks
+  - Added checkbox format for easy tracking
+  - Clear Person 1/2/3 role assignments
+  - Week 1: Testing & Infrastructure
+  - Week 2: Optimization & Documentation
+- **README.md:** Added reference to TEAM_WORK.md
+
+---
+
+### Key Learnings
+
+**Why Thorough Pre-Testing Verification Matters:**
+- Found 5 critical bugs that would have blocked ALL testing
+- Discovered missing test infrastructure early
+- Better to invest 30 min + 2-3 days upfront than waste 2 weeks on crashes
+- Tests provide regression protection for future changes
+
+**Framework Integration Checklist (for future reference):**
+- ✅ Add mode constant to constants.h
+- ✅ Register factories in frame.cc
+- ❌ **CRITICAL:** Add mode to ALL verify() statements checking tx_proto_
+- ❌ **CRITICAL:** Add mode to ALL if/switch statements on tx_proto_
+- ❌ **CRITICAL:** Check OCC-specific initialization (OCC_LAZY policy, TxnMgrOCC)
+
+**Test Infrastructure Requirements:**
+- Tests must match implementation namespace (janus:: not deptran::)
+- Tests must use framework types (Row*, mdb::colid_t, i64)
+- Cannot reuse tests from different implementation approaches
+
+---
+
+### Files Modified
+
+**Bug Fixes (2 files):**
+- `src/deptran/classic/coordinator.cc` - 2 verify statement fixes
+- `src/deptran/scheduler.cc` - 3 framework integration fixes
+
+**Documentation (3 files):**
+- `PLANNER.md` - Added testing phase focus
+- `TEAM_WORK.md` - Complete rewrite for 2-week plan
+- `README.md` - Added TEAM_WORK.md reference
+
+---
+
+### Next Steps
+
+**Immediate (Phase 0 - Days 1-3):**
+1. **Day 1:** Create `test_validation_queue_janus.cc` + CMakeLists.txt integration
+2. **Day 2:** Create `test_early_abort_detector_janus.cc` and `test_conflict_graph_janus.cc`
+3. **Day 3:** Create `test_scheduler_enhanced_janus.cc` (smoke test)
+4. **Verify:** Run `ctest` and ensure all tests pass before proceeding
+
+**After Phase 0 Complete:**
+- Proceed with original 2-week testing plan in TEAM_WORK.md
+- All 3 people can work in parallel with confidence
+
+---
+
+**Last Updated**: 2025-11-30
+**Current Phase**: Priority 0 Complete ✅, Phase 0 Starting
+**Critical Bugs Fixed**: 5/5 ✅
+**Next Step**: Write minimal test suite (Phase 0, 2-3 days)
+**Testing Phase Start**: After Phase 0 complete
