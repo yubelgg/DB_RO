@@ -68,7 +68,7 @@
 **Day 3-4: Config Files** (10h)
 
 - [ ] Test existing 4 configs (occ*integration*\*.yml)
-- [ ] Create config/occ_enhanced_both.yml
+- [ ] Create config/occ_enhanced.yml
 - [ ] Create config/occ_enhanced_batch_only.yml
 - [ ] Create config/occ_enhanced_abort_only.yml
 - [ ] Create config/occ_baseline_comparison.yml
