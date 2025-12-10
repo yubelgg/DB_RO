@@ -11,7 +11,14 @@ SchedulerOccEnhanced::SchedulerOccEnhanced()
     : SchedulerOcc(),
       batch_size_(Config::GetConfig()->get_batch_size()),
       batch_timeout_(std::chrono::microseconds(
-          Config::GetConfig()->get_batch_timeout_us())) {
+          Config::GetConfig()->get_batch_timeout_us())),
+      start_time_(std::chrono::steady_clock::now()) {
+  // Initialize abort reason counters
+  aborts_by_reason_[AbortReason::EARLY] = 0;
+  aborts_by_reason_[AbortReason::VERSION_MISMATCH] = 0;
+  aborts_by_reason_[AbortReason::LOCK_CONFLICT] = 0;
+  aborts_by_reason_[AbortReason::UNKNOWN] = 0;
+
   // Create early abort detector
   early_abort_detector_ = std::make_unique<EarlyAbortDetector>();
 
@@ -42,9 +49,22 @@ SchedulerOccEnhanced::~SchedulerOccEnhanced() {
   }
 
   // Log final statistics
+  Log_info("SchedulerOccEnhanced: Transaction metrics:");
+  Log_info("  Total attempted: %llu", num_transactions_attempted_.load());
+  Log_info("  Total committed: %llu", num_transactions_committed_.load());
+  Log_info("  Total aborted: %llu", num_transactions_aborted_.load());
+  Log_info("  Abort rate: %.2f%%", GetAbortRate() * 100.0);
+  Log_info("  Throughput: %.2f TPS", GetThroughput());
+
+  Log_info("SchedulerOccEnhanced: Abort breakdown:");
+  Log_info("  Early aborts: %llu", GetAbortCount(AbortReason::EARLY));
+  Log_info("  Version mismatch: %llu", GetAbortCount(AbortReason::VERSION_MISMATCH));
+  Log_info("  Lock conflicts: %llu", GetAbortCount(AbortReason::LOCK_CONFLICT));
+  Log_info("  Unknown: %llu", GetAbortCount(AbortReason::UNKNOWN));
+
   if (early_abort_detector_) {
     const auto& stats = early_abort_detector_->GetStats();
-    Log_info("SchedulerOccEnhanced: Early abort stats - "
+    Log_info("SchedulerOccEnhanced: Early abort detector stats - "
              "reads=%llu, writes=%llu, early_aborts=%llu, version_changes=%llu",
              stats.total_reads.load(),
              stats.total_writes.load(),
@@ -56,9 +76,23 @@ SchedulerOccEnhanced::~SchedulerOccEnhanced() {
 }
 
 bool SchedulerOccEnhanced::DoPrepare(txnid_t tx_id) {
+  // Increment attempted counter
+  num_transactions_attempted_++;
+
   // Get enhanced transaction
   auto tx_box = std::dynamic_pointer_cast<TxOccEnhanced>(GetOrCreateTx(tx_id));
   verify(tx_box != nullptr);
+
+  // Set execution start time for latency tracking
+  tx_box->SetExecutionStartTime();
+
+  // Check if transaction was marked for early abort
+  if (tx_box->IsEarlyAborted()) {
+    tx_box->SetExecutionEndTime(); // Mark end time even on early abort
+    Log_debug("DoPrepare: tx %" PRIx64 " was marked for early abort", tx_id);
+    RecordAbort(AbortReason::EARLY);
+    return false;
+  }
 
   // Create promise/future for waiting on validation result
   auto promise = std::make_shared<std::promise<bool>>();
@@ -75,6 +109,14 @@ bool SchedulerOccEnhanced::DoPrepare(txnid_t tx_id) {
   // Wait for validation result from background thread
   bool validation_passed = future.get();
 
+  if (!validation_passed) {
+    tx_box->SetExecutionEndTime(); // Mark end time on validation failure
+    // Categorize abort reason based on validation failure
+    // TODO: Distinguish between VERSION_MISMATCH and LOCK_CONFLICT
+    // For now, assume version mismatch is most common OCC abort cause
+    RecordAbort(AbortReason::VERSION_MISMATCH);
+  }
+
   Log_debug("DoPrepare: tx %" PRIx64 " validation result: %s", tx_id,
             validation_passed ? "PASSED" : "FAILED");
 
@@ -82,6 +124,15 @@ bool SchedulerOccEnhanced::DoPrepare(txnid_t tx_id) {
 }
 
 void SchedulerOccEnhanced::DoCommit(Tx &tx) {
+  // Increment committed counter
+  num_transactions_committed_++;
+
+  // Mark execution end time for latency tracking
+  auto* tx_enhanced = dynamic_cast<TxOccEnhanced*>(&tx);
+  if (tx_enhanced) {
+    tx_enhanced->SetExecutionEndTime();
+  }
+
   // First, perform the commit using parent implementation
   // This applies writes and increments versions
   SchedulerOcc::DoCommit(tx);
@@ -111,7 +162,7 @@ void SchedulerOccEnhanced::DoCommit(Tx &tx) {
           }
         }
       }
-      
+
       // Clean up this transaction's tracking in the detector
       early_abort_detector_->RemoveTransaction(tx_enhanced->tid_);
     }

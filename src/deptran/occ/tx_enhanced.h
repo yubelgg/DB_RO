@@ -113,13 +113,45 @@ public:
    */
   bool IsEarlyAborted() const { return early_aborted_; }
 
+  /**
+   * Get execution duration in microseconds
+   */
+  int64_t GetExecutionDurationUs() const {
+    if (execution_start_time_.time_since_epoch().count() == 0 ||
+        execution_end_time_.time_since_epoch().count() == 0) {
+      return 0;
+    }
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+        execution_end_time_ - execution_start_time_).count();
+  }
+
+  /**
+   * Set execution start time (called at transaction begin)
+   */
+  void SetExecutionStartTime() {
+    execution_start_time_ = std::chrono::steady_clock::now();
+  }
+
+  /**
+   * Set execution end time (called at commit/abort)
+   */
+  void SetExecutionEndTime() {
+    execution_end_time_ = std::chrono::steady_clock::now();
+  }
+
+  /**
+   * Get execution start and end times
+   */
+  std::chrono::steady_clock::time_point GetStartTime() const { return execution_start_time_; }
+  std::chrono::steady_clock::time_point GetEndTime() const { return execution_end_time_; }
+
 private:
   // Batch validation metadata
   BatchMetadata batch_meta_;
 
   // Early abort detection
   EarlyAbortDetector* early_abort_detector_ = nullptr;
-  
+
   // Operation counter for periodic abort checking
   size_t operation_count_ = 0;
 
@@ -128,6 +160,10 @@ private:
 
   // Flag indicating this transaction has been marked for early abort
   bool early_aborted_ = false;
+
+  // Execution timing for latency metrics
+  std::chrono::steady_clock::time_point execution_start_time_;
+  std::chrono::steady_clock::time_point execution_end_time_;
 
   /**
    * Increment operation counter and check for early abort if needed

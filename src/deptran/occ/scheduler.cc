@@ -9,11 +9,40 @@
 #include "../config.h"
 #include "tx.h"
 #include "scheduler.h"
+#include "scheduler_enhanced.h"  // For AbortReason enum
 
 namespace janus {
 
-SchedulerOcc::SchedulerOcc() : SchedulerClassic() {
+SchedulerOcc::SchedulerOcc()
+    : SchedulerClassic(),
+      start_time_(std::chrono::steady_clock::now()) {
   mdb_txn_mgr_ = make_shared<mdb::TxnMgrOCC>();
+
+  // Initialize abort reason counters
+  aborts_by_reason_[AbortReason::EARLY] = 0;
+  aborts_by_reason_[AbortReason::VERSION_MISMATCH] = 0;
+  aborts_by_reason_[AbortReason::LOCK_CONFLICT] = 0;
+  aborts_by_reason_[AbortReason::UNKNOWN] = 0;
+}
+
+SchedulerOcc::~SchedulerOcc() {
+  // Log final statistics
+  Log_info("SchedulerOcc (Baseline): Transaction metrics:");
+  Log_info("  Total attempted: %llu", num_transactions_attempted_.load());
+  Log_info("  Total committed: %llu", num_transactions_committed_.load());
+  Log_info("  Total aborted: %llu", num_transactions_aborted_.load());
+  Log_info("  Abort rate: %.2f%%", GetAbortRate() * 100.0);
+  Log_info("  Throughput: %.2f TPS", GetThroughput());
+
+  Log_info("SchedulerOcc (Baseline): Abort breakdown:");
+  Log_info("  Version mismatch: %llu", GetAbortCount(AbortReason::VERSION_MISMATCH));
+  Log_info("  Lock conflicts: %llu", GetAbortCount(AbortReason::LOCK_CONFLICT));
+  Log_info("  Unknown: %llu", GetAbortCount(AbortReason::UNKNOWN));
+}
+
+uint64_t SchedulerOcc::GetAbortCount(AbortReason reason) const {
+  auto it = aborts_by_reason_.find(reason);
+  return (it != aborts_by_reason_.end()) ? it->second.load() : 0;
 }
 
 mdb::Txn* SchedulerOcc::get_mdb_txn(const i64 tid) {
@@ -36,6 +65,9 @@ mdb::Txn* SchedulerOcc::get_mdb_txn(const i64 tid) {
 }
 
 bool SchedulerOcc::DoPrepare(txnid_t tx_id) {
+  // Increment attempted counter
+  num_transactions_attempted_++;
+
   // do nothing here?
   auto tx_box = dynamic_pointer_cast<TxOcc>(GetOrCreateTx(tx_id));
   // TODO do version control, locks, etc.
@@ -49,6 +81,7 @@ bool SchedulerOcc::DoPrepare(txnid_t tx_id) {
     Log_debug("txn: occ validation failed. id %" PRIx64 "site: %x",
         (int64_t) tx_id, (int) this->site_id_);
     txn->__debug_abort_ = 1;
+    RecordAbort(AbortReason::VERSION_MISMATCH);  // Version check failed
     return false;
   } else {
     // now lock the commit
@@ -75,6 +108,7 @@ bool SchedulerOcc::DoPrepare(txnid_t tx_id) {
         Log_debug("txn: occ read locks failed. id %" PRIx64 ", site: %x, is-leader: %d",
             (int64_t)tx_id, (int)this->site_id_, tx_box->is_leader_hint_);
         txn->__debug_abort_ = 1;
+        RecordAbort(AbortReason::LOCK_CONFLICT);  // Read lock acquisition failed
         return false;
       }
       insert_into_map(txn->locks_, row, -1);
@@ -101,6 +135,7 @@ bool SchedulerOcc::DoPrepare(txnid_t tx_id) {
         txn->locks_.clear();
         Log_debug("txn: occ write locks failed. id %" PRIx64 "site: %x", (int64_t)tx_id, (int)this->site_id_);
         txn->__debug_abort_ = 1;
+        RecordAbort(AbortReason::LOCK_CONFLICT);  // Write lock acquisition failed
         return false;
       }
       insert_into_map(txn->locks_, row, -1);
@@ -113,6 +148,9 @@ bool SchedulerOcc::DoPrepare(txnid_t tx_id) {
 }
 
 void SchedulerOcc::DoCommit(Tx& tx) {
+  // Increment committed counter
+  num_transactions_committed_++;
+
   // TODO do version control, locks, etc.
   auto cmd_id_ = tx.tid_;
   auto mdb_txn_ = (mdb::TxnOCC*) get_mdb_txn(cmd_id_);

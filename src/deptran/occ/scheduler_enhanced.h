@@ -5,10 +5,22 @@
 #include "scheduler.h"
 #include "validation_queue.h"
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
+#include <map>
 #include <thread>
 
 namespace janus {
+
+/**
+ * Abort reason categorization for metrics tracking
+ */
+enum class AbortReason {
+  EARLY = 0,           // Early abort detected during execution
+  VERSION_MISMATCH = 1, // OCC validation failed due to version changes
+  LOCK_CONFLICT = 2,    // Could not acquire locks
+  UNKNOWN = 3           // Other/unspecified reasons
+};
 
 /**
  * Enhanced OCC Scheduler with Parallel Batch Validation and Early Abort
@@ -75,6 +87,59 @@ public:
     return early_abort_detector_ ? early_abort_detector_->GetStats() : empty_stats;
   }
 
+  /**
+   * Get abort rate (percentage of transactions aborted)
+   * @return Abort rate as a fraction (0.0 to 1.0)
+   */
+  double GetAbortRate() const {
+    uint64_t attempted = num_transactions_attempted_.load();
+    if (attempted == 0) return 0.0;
+    return static_cast<double>(num_transactions_aborted_.load()) / attempted;
+  }
+
+  /**
+   * Get throughput in transactions per second
+   * @return Throughput (committed transactions / elapsed seconds)
+   */
+  double GetThroughput() const {
+    auto now = std::chrono::steady_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(
+        now - start_time_).count();
+    if (elapsed == 0) return 0.0;
+    double elapsed_seconds = elapsed / 1000000.0;
+    return static_cast<double>(num_transactions_committed_.load()) / elapsed_seconds;
+  }
+
+  /**
+   * Get abort count for a specific reason
+   * @param reason The abort reason category
+   * @return Number of aborts for that reason
+   */
+  uint64_t GetAbortCount(AbortReason reason) const {
+    auto it = aborts_by_reason_.find(reason);
+    return (it != aborts_by_reason_.end()) ? it->second.load() : 0;
+  }
+
+  /**
+   * Get total transaction counts
+   */
+  uint64_t GetAttemptedCount() const { return num_transactions_attempted_.load(); }
+  uint64_t GetCommittedCount() const { return num_transactions_committed_.load(); }
+  uint64_t GetAbortedCount() const { return num_transactions_aborted_.load(); }
+
+  /**
+   * Reset all metrics (for testing or between experiments)
+   */
+  void ResetMetrics() {
+    num_transactions_attempted_ = 0;
+    num_transactions_committed_ = 0;
+    num_transactions_aborted_ = 0;
+    for (auto& pair : aborts_by_reason_) {
+      pair.second = 0;
+    }
+    start_time_ = std::chrono::steady_clock::now();
+  }
+
 private:
   /**
    * Background thread that processes validation batches
@@ -95,6 +160,26 @@ private:
   // Configuration (initialized from Config in constructor)
   size_t batch_size_;                       // Max transactions per batch
   std::chrono::microseconds batch_timeout_; // Max wait time for batch
+
+  // Metrics - Global transaction counters
+  std::atomic<uint64_t> num_transactions_attempted_{0};
+  std::atomic<uint64_t> num_transactions_committed_{0};
+  std::atomic<uint64_t> num_transactions_aborted_{0};
+
+  // Abort reason tracking
+  mutable std::map<AbortReason, std::atomic<uint64_t>> aborts_by_reason_;
+
+  // Timing for throughput calculation
+  std::chrono::steady_clock::time_point start_time_;
+
+  /**
+   * Record an abort with categorization
+   * @param reason The reason for the abort
+   */
+  void RecordAbort(AbortReason reason) {
+    num_transactions_aborted_++;
+    aborts_by_reason_[reason]++;
+  }
 };
 
 } // namespace janus
