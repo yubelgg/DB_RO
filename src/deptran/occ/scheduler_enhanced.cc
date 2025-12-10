@@ -3,6 +3,7 @@
 #include "../memdb/txn_occ.h"
 #include "../memdb/row.h"
 #include "../config.h"
+#include "../rcc_rpc.h"
 #include "base/all.hpp"
 
 namespace janus {
@@ -201,6 +202,19 @@ void SchedulerOccEnhanced::ValidationLoop() {
   }
 
   Log_info("ValidationLoop: background thread exiting");
+}
+
+bool SchedulerOccEnhanced::Dispatch(cmdid_t cmd_id,
+                                    shared_ptr<Marshallable> cmd,
+                                    TxnOutput& ret_output) {
+  // Create dummy DepId (required by SchedulerClassic::Dispatch signature)
+  DepId dep_id;
+  dep_id.str = "dep";
+  dep_id.id = 0;
+
+  // Call parent SchedulerClassic::Dispatch with 4 parameters
+  // This will eventually call our overridden DoPrepare() for validation
+  return SchedulerClassic::Dispatch(cmd_id, dep_id, cmd, ret_output);
 }
 
 } // namespace janus

@@ -7,6 +7,7 @@
 #include "../__dep__.h"
 #include "../scheduler.h"
 #include "../config.h"
+#include "../rcc_rpc.h"
 #include "tx.h"
 #include "scheduler.h"
 #include "scheduler_enhanced.h"  // For AbortReason enum
@@ -236,6 +237,18 @@ void SchedulerOcc::DoCommit(Tx& tx) {
   txn->release_resource();
   delete mdb_txn_;
   tx.mdb_txn_ = nullptr;
+}
+
+bool SchedulerOcc::Dispatch(cmdid_t cmd_id,
+                            shared_ptr<Marshallable> cmd,
+                            TxnOutput& ret_output) {
+  // Create dummy DepId (required by SchedulerClassic::Dispatch signature)
+  DepId dep_id;
+  dep_id.str = "dep";
+  dep_id.id = 0;
+
+  // Call parent SchedulerClassic::Dispatch with 4 parameters
+  return SchedulerClassic::Dispatch(cmd_id, dep_id, cmd, ret_output);
 }
 
 } // namespace janus

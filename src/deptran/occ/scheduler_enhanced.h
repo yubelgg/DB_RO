@@ -63,6 +63,21 @@ public:
   virtual void DoCommit(Tx &tx) override;
 
   /**
+   * RPC Dispatch method - called by RPC service layer
+   *
+   * Wraps base class 3-parameter signature to call parent's 4-parameter version.
+   * Creates dummy DepId to match SchedulerClassic::Dispatch signature.
+   *
+   * @param cmd_id Transaction/command ID
+   * @param cmd Command data (marshallable)
+   * @param ret_output Output to populate
+   * @return true if dispatch succeeds
+   */
+  virtual bool Dispatch(cmdid_t cmd_id,
+                        shared_ptr<Marshallable> cmd,
+                        TxnOutput& ret_output) override;
+
+  /**
    * Get the early abort detector instance
    * Used by TxOccEnhanced to register reads/writes
    */
