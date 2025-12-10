@@ -122,10 +122,10 @@ private:
   
   // Operation counter for periodic abort checking
   size_t operation_count_ = 0;
-  
-  // How often to check for early abort (every N operations)
-  size_t check_interval_ = 10; // Default: check every 10 operations
-  
+
+  // How often to check for early abort (every N operations, initialized from Config)
+  size_t check_interval_;
+
   // Flag indicating this transaction has been marked for early abort
   bool early_aborted_ = false;
 

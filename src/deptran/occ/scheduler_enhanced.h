@@ -92,9 +92,9 @@ private:
   std::thread validation_thread_;
   std::atomic<bool> running_{false};
 
-  // Configuration
-  size_t batch_size_ = 32;                       // Max transactions per batch
-  std::chrono::microseconds batch_timeout_{100}; // Max wait time for batch
+  // Configuration (initialized from Config in constructor)
+  size_t batch_size_;                       // Max transactions per batch
+  std::chrono::microseconds batch_timeout_; // Max wait time for batch
 };
 
 } // namespace janus

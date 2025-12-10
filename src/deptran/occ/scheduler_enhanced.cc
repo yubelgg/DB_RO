@@ -2,27 +2,31 @@
 #include "tx_enhanced.h"
 #include "../memdb/txn_occ.h"
 #include "../memdb/row.h"
+#include "../config.h"
 #include "base/all.hpp"
 
 namespace janus {
 
-SchedulerOccEnhanced::SchedulerOccEnhanced() : SchedulerOcc() {
+SchedulerOccEnhanced::SchedulerOccEnhanced()
+    : SchedulerOcc(),
+      batch_size_(Config::GetConfig()->get_batch_size()),
+      batch_timeout_(std::chrono::microseconds(
+          Config::GetConfig()->get_batch_timeout_us())) {
   // Create early abort detector
   early_abort_detector_ = std::make_unique<EarlyAbortDetector>();
 
   // Create batch validator
   batch_validator_ =
       std::make_unique<BatchValidator>(batch_size_,
-                                       8 // num_workers for parallel validation
-      );
+                                       Config::GetConfig()->get_num_workers());
 
   // Start background validation thread
   running_ = true;
   validation_thread_ = std::thread(&SchedulerOccEnhanced::ValidationLoop, this);
 
   Log_info(
-      "SchedulerOccEnhanced: initialized with batch_size=%zu, timeout=%ldus",
-      batch_size_, batch_timeout_.count());
+      "SchedulerOccEnhanced: initialized with batch_size=%zu, timeout=%ldus, num_workers=%d",
+      batch_size_, batch_timeout_.count(), Config::GetConfig()->get_num_workers());
 }
 
 SchedulerOccEnhanced::~SchedulerOccEnhanced() {

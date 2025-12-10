@@ -2,6 +2,7 @@
 #include "conflict_graph.h"
 #include "../memdb/row.h"
 #include "../memdb/txn_occ.h"
+#include "../config.h"
 #include "base/all.hpp"
 #include <algorithm>
 #include <thread>
@@ -56,7 +57,8 @@ BatchValidator::ValidateBatch(const std::vector<TxOccEnhanced *> &batch) {
 
   // Decide: serial or parallel validation?
   // Use parallel validation if batch is large enough and we have workers
-  bool use_parallel = (batch.size() >= 4 && num_workers_ > 0);
+  bool use_parallel = (batch.size() >= static_cast<size_t>(Config::GetConfig()->get_parallel_threshold())
+                       && num_workers_ > 0);
 
   if (use_parallel) {
     ValidateBatchParallel(batch, result);

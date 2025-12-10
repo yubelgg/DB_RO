@@ -72,7 +72,18 @@ class Config {
   int timestamp_{TimestampType::CLOCK};
 
   // lab configs
-    
+
+  // Enhanced OCC - Batch Validation Configuration
+  bool batch_validation_enabled_ = false;
+  int32_t batch_size_ = 32;
+  int32_t batch_timeout_us_ = 100;
+  int32_t num_workers_ = 8;
+  int32_t parallel_threshold_ = 4;
+
+  // Enhanced OCC - Early Abort Configuration
+  bool early_abort_enabled_ = false;
+  int32_t check_interval_ = 10;
+  int32_t bloom_filter_size_ = 10000;
 
   // failover configuration
   bool failover_;
@@ -301,6 +312,16 @@ class Config {
   bool get_failover_random() { return failover_random_; }
   bool get_failover_leader() { return failover_leader_; }
   bool carousel_basic_mode() { return carousel_basic_mode_; }
+
+  // Enhanced OCC getters
+  bool get_batch_validation_enabled() const { return batch_validation_enabled_; }
+  int32_t get_batch_size() const { return batch_size_; }
+  int32_t get_batch_timeout_us() const { return batch_timeout_us_; }
+  int32_t get_num_workers() const { return num_workers_; }
+  int32_t get_parallel_threshold() const { return parallel_threshold_; }
+  bool get_early_abort_enabled() const { return early_abort_enabled_; }
+  int32_t get_check_interval() const { return check_interval_; }
+  int32_t get_bloom_filter_size() const { return bloom_filter_size_; }
 
   const char *log_path();
 

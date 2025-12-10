@@ -2,6 +2,7 @@
 #include "early_abort_detector.h"
 #include "scheduler_enhanced.h"
 #include "../memdb/row.h"
+#include "../config.h"
 #include "base/all.hpp"
 
 namespace janus {
@@ -10,7 +11,7 @@ TxOccEnhanced::TxOccEnhanced(epoch_t epoch, txnid_t tid, TxLogServer* mgr)
     : TxOcc(epoch, tid, mgr),
       early_abort_detector_(nullptr),
       operation_count_(0),
-      check_interval_(10),
+      check_interval_(Config::GetConfig()->get_check_interval()),
       early_aborted_(false) {
   
   // Try to get early abort detector from scheduler
