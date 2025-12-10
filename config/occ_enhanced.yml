@@ -16,7 +16,7 @@
 mode:
   cc: occ_enhanced    # Enhanced OCC concurrency control
   ab: none            # No atomic broadcast (single node)
-  read_only: occ
+  read_only: occ_enhanced
   batch: false
   retry: 20
   ongoing: 1
