@@ -1,6 +1,7 @@
 
 #include "communicator.h"
 #include "coordinator.h"
+#include "classic/coordinator.h"
 #include "rcc/graph.h"
 #include "rcc/graph_marshaler.h"
 #include "command.h"
@@ -794,11 +795,65 @@ shared_ptr<IntEvent>
 Communicator::BroadcastDispatch(ReadyPiecesData cmds_by_par,
                                  Coordinator* coo,
                                  TxData* txn) {
-  // TODO: Implement full BroadcastDispatch with ReadyPiecesData
-  // For now, return a dummy event to allow compilation
-  Log_warn("%s: stub implementation, needs proper implementation from lab-solution", __FUNCTION__);
+  // Minimal implementation for single-site testing
+  // For full distributed implementation, see lab-solution
   auto e = Reactor::CreateSpEvent<IntEvent>();
-  e->Set(1);  // Mark as ready immediately
+
+  if (cmds_by_par.empty()) {
+    Log_debug("%s: no commands to dispatch", __FUNCTION__);
+    e->Set(1);
+    return e;
+  }
+
+  // Count total dispatches needed
+  size_t total_dispatches = cmds_by_par.size();
+  auto dispatch_counter = std::make_shared<std::atomic<size_t>>(0);
+
+  // Dispatch to each partition
+  for (auto& pair : cmds_by_par) {
+    parid_t par_id = pair.first;
+    auto& cmds = pair.second;
+
+    if (cmds.empty()) {
+      (*dispatch_counter)++;
+      continue;
+    }
+
+    // Create callback for this partition's dispatch
+    std::function<void(int, TxnOutput&)> callback =
+        [dispatch_counter, total_dispatches, e, coo](int res, TxnOutput& output) {
+      size_t completed = ++(*dispatch_counter);
+      if (completed == total_dispatches) {
+        e->Set(1);  // All dispatches complete
+      }
+      // Forward the ack to coordinator (cast to CoordinatorClassic for DispatchAck method)
+      auto classic_coo = dynamic_cast<CoordinatorClassic*>(coo);
+      if (classic_coo) {
+        classic_coo->DispatchAck(classic_coo->phase_, res, output);
+      }
+    };
+
+    // Dispatch this partition's commands
+    auto sp_vec_piece = std::make_shared<vector<shared_ptr<TxPieceData>>>();
+    for (auto& cmd : cmds) {
+      auto piece = std::dynamic_pointer_cast<TxPieceData>(cmd);
+      if (piece) {
+        sp_vec_piece->push_back(piece);
+      }
+    }
+
+    if (!sp_vec_piece->empty()) {
+      BroadcastDispatch(sp_vec_piece, coo, callback);
+    } else {
+      (*dispatch_counter)++;
+    }
+  }
+
+  // Check if all dispatches were empty
+  if (*dispatch_counter == total_dispatches) {
+    e->Set(1);
+  }
+
   return e;
 }
 

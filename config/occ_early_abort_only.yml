@@ -1,0 +1,54 @@
+# Enhanced OCC - Early Abort Only
+# Early abort enabled, batch validation disabled
+#
+# Usage: ./build/labtest -f config/occ_early_abort_only.yml
+#
+# Purpose: Ablation test to measure impact of early abort detection alone
+
+site:
+  server:
+    - ["s101:8100"]
+  client:
+    - ["c101"]
+
+process:
+  s101: localhost
+  c101: localhost
+
+host:
+  localhost: 127.0.0.1
+
+mode:
+  cc: occ_enhanced
+  ab: none
+  read_only: occ_enhanced
+  batch: false
+  retry: 20
+  ongoing: 1
+
+batch_validation:
+  enabled: false         # DISABLED for ablation
+  batch_size: 1          # Force serial validation
+
+early_abort:
+  enabled: true          # ENABLED
+  check_interval: 10
+  bloom_filter_size: 10000
+
+bench:
+  workload: rw
+  scale: 1
+  weight:
+    read: 0.5
+    write: 0.5
+  population:
+    history: 1000
+
+schema:
+  - name: history
+    column:
+      - {name: h_key, type: integer, primary: true}
+      - {name: h_c_id, type: integer}
+
+sharding:
+  history: MOD

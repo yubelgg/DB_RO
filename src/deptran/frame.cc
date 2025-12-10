@@ -73,6 +73,7 @@ Frame *Frame::GetFrame(int mode) {
   case MODE_MDCC:
   case MODE_2PL:
   case MODE_OCC:
+  case MODE_OCC_ENHANCED:
     frame = new Frame(mode);
     break;
   case MODE_EXTERNC:

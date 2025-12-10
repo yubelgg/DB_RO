@@ -1,0 +1,54 @@
+# Enhanced OCC - Batch Validation Only
+# Parallel validation enabled, early abort disabled
+#
+# Usage: ./build/labtest -f config/occ_batch_only.yml
+#
+# Purpose: Ablation test to measure impact of batch validation alone
+
+site:
+  server:
+    - ["s101:8100"]
+  client:
+    - ["c101"]
+
+process:
+  s101: localhost
+  c101: localhost
+
+host:
+  localhost: 127.0.0.1
+
+mode:
+  cc: occ_enhanced
+  ab: none
+  read_only: occ_enhanced
+  batch: false
+  retry: 20
+  ongoing: 1
+
+batch_validation:
+  enabled: true          # ENABLED
+  batch_size: 32
+  batch_timeout_us: 100
+  num_workers: 4
+
+early_abort:
+  enabled: false         # DISABLED for ablation
+
+bench:
+  workload: rw
+  scale: 1
+  weight:
+    read: 0.5
+    write: 0.5
+  population:
+    history: 1000
+
+schema:
+  - name: history
+    column:
+      - {name: h_key, type: integer, primary: true}
+      - {name: h_c_id, type: integer}
+
+sharding:
+  history: MOD
