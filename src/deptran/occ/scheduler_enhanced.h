@@ -2,6 +2,7 @@
 
 #include "batch_validator.h"
 #include "early_abort_detector.h"
+#include "hot_key_tracker.h"
 #include "scheduler.h"
 #include "validation_queue.h"
 #include <atomic>
@@ -22,6 +23,9 @@ enum class AbortReason {
   UNKNOWN = 3           // Other/unspecified reasons
 };
 
+// Forward declaration for signal handler friend function
+void sigterm_handler_enhanced(int);
+
 /**
  * Enhanced OCC Scheduler with Parallel Batch Validation and Early Abort
  * Detection
@@ -33,6 +37,9 @@ enum class AbortReason {
  *    wasted work on transactions that will eventually abort
  */
 class SchedulerOccEnhanced : public SchedulerOcc {
+  // Friend declaration for signal handler to access protected members
+  friend void sigterm_handler_enhanced(int);
+
 public:
   SchedulerOccEnhanced();
   virtual ~SchedulerOccEnhanced();
@@ -83,6 +90,14 @@ public:
    */
   EarlyAbortDetector* GetEarlyAbortDetector() const {
     return early_abort_detector_.get();
+  }
+
+  /**
+   * Get the hot key tracker instance
+   * Used to track and identify frequently accessed keys
+   */
+  HotKeyTracker* GetHotKeyTracker() const {
+    return hot_key_tracker_.get();
   }
 
   /**
@@ -167,6 +182,9 @@ private:
 
   // Early abort detection
   std::unique_ptr<EarlyAbortDetector> early_abort_detector_;
+
+  // Hot key tracking
+  std::unique_ptr<HotKeyTracker> hot_key_tracker_;
 
   // Background thread for batch processing
   std::thread validation_thread_;

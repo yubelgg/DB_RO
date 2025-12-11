@@ -58,6 +58,17 @@ public:
   std::unordered_set<size_t> GetConflicts(size_t tx_idx) const;
 
   /**
+   * Get number of conflicts for a transaction
+   */
+  size_t GetConflictCount(size_t tx_idx) const;
+
+  /**
+   * Get transactions ordered by conflict count (lowest first)
+   * Transactions with fewer conflicts are more likely to commit successfully
+   */
+  std::vector<size_t> GetLowConflictOrder() const;
+
+  /**
    * Get number of nodes (transactions) in the graph
    */
   size_t NumNodes() const { return num_nodes_; }

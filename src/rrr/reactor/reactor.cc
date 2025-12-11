@@ -279,10 +279,14 @@ void PollThreadWorker::TriggerJob() const {
   auto jobs_exec = set_sp_jobs_;
   set_sp_jobs_.clear();
   lock_job_->unlock();
+  if (!jobs_exec.empty()) {
+    Log_debug("TriggerJob: processing %zu jobs", jobs_exec.size());
+  }
   auto it = jobs_exec.begin();
   while (it != jobs_exec.end()) {
     auto sp_job = *it;
     if (sp_job->Ready()) {
+      Log_debug("TriggerJob: executing ready job");
       Coroutine::CreateRun([sp_job]() {sp_job->Work();}, __FILE__, __LINE__);
       it = jobs_exec.erase(it);
     }
@@ -369,9 +373,12 @@ void PollThreadWorker::poll_loop() const {
 
 // @safe - Thread-safe job addition with spinlock
 void PollThreadWorker::add(std::shared_ptr<Job> sp_job) const {
+  Log_debug("PollThreadWorker::add: adding job to queue");
   lock_job_->lock();
   set_sp_jobs_.insert(sp_job);
+  size_t queue_size = set_sp_jobs_.size();
   lock_job_->unlock();
+  Log_debug("PollThreadWorker::add: job added, queue_size=%zu", queue_size);
 }
 
 // @safe - Thread-safe job removal with spinlock

@@ -211,17 +211,21 @@ void Communicator::BroadcastDispatch(
   cmdid_t cmd_id = sp_vec_piece->at(0)->root_id_;
   verify(sp_vec_piece->size() > 0);
   auto par_id = sp_vec_piece->at(0)->PartitionId();
+  Log_info("BroadcastDispatch: cmd_id=%" PRIx64 ", par_id=%d, num_pieces=%zu",
+           cmd_id, par_id, sp_vec_piece->size());
   rrr::FutureAttr fuattr;
   fuattr.callback =
-      [coo, this, callback](Future* fu) {
+      [coo, this, callback, cmd_id](Future* fu) {
         int32_t ret;
         TxnOutput outputs;
         fu->get_reply() >> ret >> outputs;
+        Log_info("BroadcastDispatch callback: cmd_id=%" PRIx64 ", ret=%d, outputs_size=%zu",
+                 cmd_id, ret, outputs.size());
         callback(ret, outputs);
       };
   auto pair_leader_proxy = LeaderProxyForPartition(par_id);
-  Log_debug("send dispatch to site %ld",
-            pair_leader_proxy.first);
+  Log_info("BroadcastDispatch: sending to leader site %ld",
+           pair_leader_proxy.first);
   auto proxy = pair_leader_proxy.second;
   shared_ptr<VecPieceData> sp_vpd(new VecPieceData);
   sp_vpd->sp_vec_piece_data_ = sp_vec_piece;

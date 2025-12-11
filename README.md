@@ -75,6 +75,54 @@ First time build could take time (10 minutes). You can add `-j32` to speed up bu
 ./build/labtest -f config/shard_lab_test.yml
 ```
 
+#### OCC Integration Tests (Enhanced OCC)
+
+Run integration tests to compare baseline OCC vs Enhanced OCC performance:
+
+```bash
+# Build first
+make labtest
+
+# Run baseline OCC (standard implementation)
+./build/labtest -f config/occ_baseline.yml -d 15 -n 4
+
+# Run enhanced OCC (with batch validation + early abort)
+./build/labtest -f config/occ_full.yml -d 15 -n 4
+
+# Run high-contention tests (10 keys for more conflicts)
+./build/labtest -f config/occ_baseline_high_contention.yml -d 15 -n 4
+./build/labtest -f config/occ_full_high_contention.yml -d 15 -n 4
+```
+
+**Parameters:**
+
+| Flag | Description | Default |
+|------|-------------|---------|
+| `-f` | Config file path | Required |
+| `-d` | Test duration (seconds) | 10 |
+| `-n` | Concurrent transactions | 1 |
+
+**Available OCC Configs:**
+
+| Config | Description |
+|--------|-------------|
+| `occ_baseline.yml` | Vanilla OCC (comparison baseline) |
+| `occ_full.yml` | Enhanced OCC with batch validation + early abort |
+| `occ_baseline_high_contention.yml` | Baseline with 10 keys (high conflict) |
+| `occ_full_high_contention.yml` | Enhanced with 10 keys (high conflict) |
+
+**Expected Output:**
+
+The test prints metrics when terminated (via `timeout` command or Ctrl+C):
+- Abort rate (percentage)
+- Throughput (TPS)
+- Abort breakdown (version mismatch, lock conflicts, early aborts)
+
+Example using timeout:
+```bash
+timeout 25 ./build/labtest -f config/occ_full_high_contention.yml -d 15 -n 4
+```
+
 ## Authors and Acknowledgements
 
 Authors of the lab framework:

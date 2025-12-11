@@ -11,8 +11,30 @@
 #include "tx.h"
 #include "scheduler.h"
 #include "scheduler_enhanced.h"  // For AbortReason enum
+#include <signal.h>
 
 namespace janus {
+
+// Global pointer for signal handler (only one scheduler instance per process)
+static SchedulerOcc* g_scheduler_occ = nullptr;
+
+// Signal handler for SIGTERM/SIGINT - print metrics before exit
+void sigterm_handler_baseline(int signum) {
+  if (g_scheduler_occ) {
+    Log_info("SchedulerOcc (Baseline): Caught signal %d, printing metrics:", signum);
+    Log_info("  Total attempted: %llu", g_scheduler_occ->num_transactions_attempted_.load());
+    Log_info("  Total committed: %llu", g_scheduler_occ->num_transactions_committed_.load());
+    Log_info("  Total aborted: %llu", g_scheduler_occ->num_transactions_aborted_.load());
+    Log_info("  Abort rate: %.2f%%", g_scheduler_occ->GetAbortRate() * 100.0);
+    Log_info("  Throughput: %.2f TPS", g_scheduler_occ->GetThroughput());
+
+    Log_info("SchedulerOcc (Baseline): Abort breakdown:");
+    Log_info("  Version mismatch: %llu", g_scheduler_occ->GetAbortCount(AbortReason::VERSION_MISMATCH));
+    Log_info("  Lock conflicts: %llu", g_scheduler_occ->GetAbortCount(AbortReason::LOCK_CONFLICT));
+    Log_info("  Unknown: %llu", g_scheduler_occ->GetAbortCount(AbortReason::UNKNOWN));
+  }
+  exit(0);
+}
 
 SchedulerOcc::SchedulerOcc()
     : SchedulerClassic(),
@@ -24,9 +46,17 @@ SchedulerOcc::SchedulerOcc()
   aborts_by_reason_[AbortReason::VERSION_MISMATCH] = 0;
   aborts_by_reason_[AbortReason::LOCK_CONFLICT] = 0;
   aborts_by_reason_[AbortReason::UNKNOWN] = 0;
+
+  // Register signal handler to print metrics on SIGTERM/SIGINT
+  g_scheduler_occ = this;
+  signal(SIGTERM, sigterm_handler_baseline);
+  signal(SIGINT, sigterm_handler_baseline);
 }
 
 SchedulerOcc::~SchedulerOcc() {
+  // Clear global pointer
+  g_scheduler_occ = nullptr;
+
   // Log final statistics
   Log_info("SchedulerOcc (Baseline): Transaction metrics:");
   Log_info("  Total attempted: %llu", num_transactions_attempted_.load());
@@ -66,6 +96,8 @@ mdb::Txn* SchedulerOcc::get_mdb_txn(const i64 tid) {
 }
 
 bool SchedulerOcc::DoPrepare(txnid_t tx_id) {
+  auto start_time = std::chrono::steady_clock::now();
+  
   // Increment attempted counter
   num_transactions_attempted_++;
 
@@ -77,12 +109,18 @@ bool SchedulerOcc::DoPrepare(txnid_t tx_id) {
   verify(txn->outcome_ == symbol_t::NONE);
   verify(!txn->verified_);
 
+  auto setup_time = std::chrono::steady_clock::now();
+  auto setup_us = std::chrono::duration_cast<std::chrono::microseconds>(setup_time - start_time).count();
+
   // only do version check on leader.
   if (tx_box->is_leader_hint_ && !txn->version_check()) {
     Log_debug("txn: occ validation failed. id %" PRIx64 "site: %x",
         (int64_t) tx_id, (int) this->site_id_);
     txn->__debug_abort_ = 1;
     RecordAbort(AbortReason::VERSION_MISMATCH);  // Version check failed
+    auto end_time = std::chrono::steady_clock::now();
+    auto total_us = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
+    Log_debug("DoPrepare (baseline) tx %" PRIx64 ": setup=%ldus, total=%ldus (version_fail)", tx_id, setup_us, total_us);
     return false;
   } else {
     // now lock the commit
@@ -110,6 +148,9 @@ bool SchedulerOcc::DoPrepare(txnid_t tx_id) {
             (int64_t)tx_id, (int)this->site_id_, tx_box->is_leader_hint_);
         txn->__debug_abort_ = 1;
         RecordAbort(AbortReason::LOCK_CONFLICT);  // Read lock acquisition failed
+        auto end_time = std::chrono::steady_clock::now();
+        auto total_us = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
+        Log_debug("DoPrepare (baseline) tx %" PRIx64 ": setup=%ldus, total=%ldus (rlock_fail)", tx_id, setup_us, total_us);
         return false;
       }
       insert_into_map(txn->locks_, row, -1);
@@ -137,6 +178,9 @@ bool SchedulerOcc::DoPrepare(txnid_t tx_id) {
         Log_debug("txn: occ write locks failed. id %" PRIx64 "site: %x", (int64_t)tx_id, (int)this->site_id_);
         txn->__debug_abort_ = 1;
         RecordAbort(AbortReason::LOCK_CONFLICT);  // Write lock acquisition failed
+        auto end_time = std::chrono::steady_clock::now();
+        auto total_us = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
+        Log_debug("DoPrepare (baseline) tx %" PRIx64 ": setup=%ldus, total=%ldus (wlock_fail)", tx_id, setup_us, total_us);
         return false;
       }
       insert_into_map(txn->locks_, row, -1);
@@ -145,6 +189,10 @@ bool SchedulerOcc::DoPrepare(txnid_t tx_id) {
     txn->__debug_abort_ = 0;
     txn->verified_ = true;
   }
+  
+  auto end_time = std::chrono::steady_clock::now();
+  auto total_us = std::chrono::duration_cast<std::chrono::microseconds>(end_time - start_time).count();
+  Log_debug("DoPrepare (baseline) tx %" PRIx64 ": setup=%ldus, total=%ldus (success)", tx_id, setup_us, total_us);
   return true;
 }
 

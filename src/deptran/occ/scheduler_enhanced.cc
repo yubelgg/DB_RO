@@ -5,8 +5,50 @@
 #include "../config.h"
 #include "../rcc_rpc.h"
 #include "base/all.hpp"
+#include <signal.h>
 
 namespace janus {
+
+// Global pointer for signal handler (only one scheduler instance per process)
+static SchedulerOccEnhanced* g_scheduler_enhanced = nullptr;
+
+// Signal handler for SIGTERM/SIGINT - print metrics before exit
+void sigterm_handler_enhanced(int signum) {
+  if (g_scheduler_enhanced) {
+    Log_info("SchedulerOccEnhanced: Caught signal %d, printing metrics:", signum);
+    Log_info("  Total attempted: %llu", g_scheduler_enhanced->num_transactions_attempted_.load());
+    Log_info("  Total committed: %llu", g_scheduler_enhanced->num_transactions_committed_.load());
+    Log_info("  Total aborted: %llu", g_scheduler_enhanced->num_transactions_aborted_.load());
+    Log_info("  Abort rate: %.2f%%", g_scheduler_enhanced->GetAbortRate() * 100.0);
+    Log_info("  Throughput: %.2f TPS", g_scheduler_enhanced->GetThroughput());
+
+    Log_info("SchedulerOccEnhanced: Abort breakdown:");
+    Log_info("  Early aborts: %llu", g_scheduler_enhanced->GetAbortCount(AbortReason::EARLY));
+    Log_info("  Version mismatch: %llu", g_scheduler_enhanced->GetAbortCount(AbortReason::VERSION_MISMATCH));
+    Log_info("  Lock conflicts: %llu", g_scheduler_enhanced->GetAbortCount(AbortReason::LOCK_CONFLICT));
+    Log_info("  Unknown: %llu", g_scheduler_enhanced->GetAbortCount(AbortReason::UNKNOWN));
+
+    if (g_scheduler_enhanced->early_abort_detector_) {
+      const auto& stats = g_scheduler_enhanced->early_abort_detector_->GetStats();
+      Log_info("SchedulerOccEnhanced: Early abort detector stats - "
+               "reads=%llu, writes=%llu, early_aborts=%llu, version_changes=%llu",
+               stats.total_reads.load(),
+               stats.total_writes.load(),
+               stats.early_aborts_detected.load(),
+               stats.version_changes_processed.load());
+    }
+
+    if (g_scheduler_enhanced->hot_key_tracker_) {
+      const auto& stats = g_scheduler_enhanced->hot_key_tracker_->GetStats();
+      Log_info("SchedulerOccEnhanced: Hot key tracker stats - "
+               "total_accesses=%llu, hot_key_accesses=%llu, unique_keys=%llu",
+               stats.total_accesses.load(),
+               stats.hot_key_accesses.load(),
+               stats.unique_keys_tracked.load());
+    }
+  }
+  exit(0);
+}
 
 SchedulerOccEnhanced::SchedulerOccEnhanced()
     : SchedulerOcc(),
@@ -23,6 +65,9 @@ SchedulerOccEnhanced::SchedulerOccEnhanced()
   // Create early abort detector
   early_abort_detector_ = std::make_unique<EarlyAbortDetector>();
 
+  // Create hot key tracker
+  hot_key_tracker_ = std::make_unique<HotKeyTracker>();
+
   // Create batch validator
   batch_validator_ =
       std::make_unique<BatchValidator>(batch_size_,
@@ -32,12 +77,20 @@ SchedulerOccEnhanced::SchedulerOccEnhanced()
   running_ = true;
   validation_thread_ = std::thread(&SchedulerOccEnhanced::ValidationLoop, this);
 
+  // Register signal handler to print metrics on SIGTERM/SIGINT
+  g_scheduler_enhanced = this;
+  signal(SIGTERM, sigterm_handler_enhanced);
+  signal(SIGINT, sigterm_handler_enhanced);
+
   Log_info(
       "SchedulerOccEnhanced: initialized with batch_size=%zu, timeout=%ldus, num_workers=%d",
       batch_size_, batch_timeout_.count(), Config::GetConfig()->get_num_workers());
 }
 
 SchedulerOccEnhanced::~SchedulerOccEnhanced() {
+  // Clear global pointer
+  g_scheduler_enhanced = nullptr;
+
   // Stop background thread
   running_ = false;
 
@@ -134,38 +187,78 @@ void SchedulerOccEnhanced::DoCommit(Tx &tx) {
     tx_enhanced->SetExecutionEndTime();
   }
 
-  // First, perform the commit using parent implementation
-  // This applies writes and increments versions
+  // CRITICAL FIX: Collect write info BEFORE calling parent DoCommit
+  // Parent's DoCommit calls RemoveMTxn() which removes the mdb transaction,
+  // making it inaccessible afterwards
+  std::vector<std::pair<Row*, mdb::colid_t>> written_columns;
+  txnid_t tx_tid = 0;
+  
+  if (early_abort_detector_ && early_abort_detector_->IsEnabled()) {
+    if (tx_enhanced) {
+      tx_tid = tx_enhanced->tid_;
+      auto* mdb_txn = dynamic_cast<mdb::TxnOCC*>(tx_enhanced->mdb_txn());
+      if (mdb_txn) {
+        // Collect all written columns BEFORE parent removes them
+        for (auto& it : mdb_txn->ver_check_write_) {
+          written_columns.push_back({it.first.row, it.first.col_id});
+        }
+        // Also collect from updates_ in case ver_check_write_ is empty
+        for (auto& it : mdb_txn->updates_) {
+          Row* row = it.first;
+          // updates_ doesn't have column info directly, iterate columns
+          // For simplicity, assume all columns are written (column 0)
+          // This is a conservative approach
+          bool already_added = false;
+          for (auto& wc : written_columns) {
+            if (wc.first == row) {
+              already_added = true;
+              break;
+            }
+          }
+          if (!already_added) {
+            written_columns.push_back({row, 0});
+          }
+        }
+        Log_debug("DoCommit: collected %zu written columns for tx %" PRIx64,
+                  written_columns.size(), tx_tid);
+      }
+    }
+  }
+
+  // Now call parent's DoCommit (this applies writes, increments versions, and removes mdb_txn)
   SchedulerOcc::DoCommit(tx);
 
   // After commit, notify early abort detector of version changes
-  if (early_abort_detector_ && early_abort_detector_->IsEnabled()) {
-    auto* tx_enhanced = dynamic_cast<TxOccEnhanced*>(&tx);
-    if (tx_enhanced) {
-      auto* mdb_txn = dynamic_cast<mdb::TxnOCC*>(tx_enhanced->mdb_txn());
-      if (mdb_txn) {
-        // Notify detector about all columns that were written
-        // This triggers early abort detection for conflicting transactions
-        for (auto& it : mdb_txn->ver_check_write_) {
-          Row* row = it.first.row;
-          mdb::colid_t col_id = it.first.col_id;
-          auto* v_row = dynamic_cast<VersionedRow*>(row);
+  // Use the pre-collected write info since mdb_txn is now removed
+  if (!written_columns.empty()) {
+    for (auto& wc : written_columns) {
+      Row* row = wc.first;
+      mdb::colid_t col_id = wc.second;
+      
+      // Track hot keys
+      if (hot_key_tracker_) {
+        hot_key_tracker_->RecordAccess(row);
+      }
+      
+      // Notify early abort detector if enabled
+      if (early_abort_detector_ && early_abort_detector_->IsEnabled()) {
+        auto* v_row = dynamic_cast<VersionedRow*>(row);
+        if (v_row) {
+          // Get the new version (already incremented by DoCommit)
+          i64 new_version = v_row->get_column_ver(col_id);
 
-          if (v_row) {
-            // Get the new version (already incremented by DoCommit)
-            i64 new_version = v_row->get_column_ver(col_id);
+          // Notify detector - this will mark conflicting txs for abort
+          early_abort_detector_->NotifyVersionChange(row, col_id, new_version);
 
-            // Notify detector - this will mark conflicting txs for abort
-            early_abort_detector_->NotifyVersionChange(row, col_id, new_version);
-
-            Log_debug("Notified version change: row=%p col=%d new_ver=%" PRIx64,
-                      row, col_id, new_version);
-          }
+          Log_debug("Notified version change: row=%p col=%d new_ver=%" PRIx64,
+                    row, col_id, new_version);
         }
       }
+    }
 
-      // Clean up this transaction's tracking in the detector
-      early_abort_detector_->RemoveTransaction(tx_enhanced->tid_);
+    // Clean up this transaction's tracking in the detector
+    if (early_abort_detector_ && tx_tid != 0) {
+      early_abort_detector_->RemoveTransaction(tx_tid);
     }
   }
 }

@@ -1,0 +1,51 @@
+# Baseline OCC Configuration - HIGH CONTENTION
+# No Enhanced OCC features - standard OCC implementation
+#
+# Usage: ./build/labtest -f config/occ_baseline_high_contention.yml -d 60 -n 8
+#
+# Purpose: High contention test to measure abort rates in baseline OCC
+# Uses small table (10 keys) to force conflicts between transactions
+
+# Minimal topology: 1 server, 1 client, single process
+site:
+  server:
+    - ["s101:8100"]
+  client:
+    - ["c101"]
+
+process:
+  s101: localhost
+  c101: localhost
+
+host:
+  localhost: 127.0.0.1
+
+mode:
+  cc: occ              # BASELINE OCC (not occ_enhanced)
+  ab: none
+  read_only: occ
+  batch: false
+  retry: 20
+  ongoing: 1
+
+# NO batch_validation section (baseline doesn't have this)
+# NO early_abort section (baseline doesn't have this)
+
+# Workload: RW benchmark with HIGH contention
+bench:
+  workload: rw
+  scale: 1
+  weight:
+    read: 0.5          # 50% reads, 50% writes
+    write: 0.5
+  population:
+    history: 10        # SMALL table (10 keys) = HIGH contention
+
+schema:
+  - name: history
+    column:
+      - {name: h_key, type: integer, primary: true}
+      - {name: h_c_id, type: integer}
+
+sharding:
+  history: MOD

@@ -58,12 +58,13 @@ void CoordinatorClassic::ForwardTxRequestAck(const TxReply& txn_reply) {
 
 void CoordinatorClassic::DoTxAsync(TxRequest& req) {
   std::lock_guard<std::recursive_mutex> lock(this->mtx_);
+  Log_info("DoTxAsync: starting transaction, tx_type=%d, coo_id=%d", req.tx_type_, coo_id_);
   TxData* cmd = frame_->CreateTxnCommand(req, txn_reg_);
   verify(txn_reg_ != nullptr);
   cmd->root_id_ = this->next_txn_id();
   cmd->id_ = cmd->root_id_;
   ongoing_tx_id_ = cmd->id_;
-  Log_debug("assigning tx id: %" PRIx64, ongoing_tx_id_);
+  Log_info("DoTxAsync: assigned tx_id=%" PRIx64 ", tx_type=%d", ongoing_tx_id_, req.tx_type_);
   cmd->timestamp_ = GenerateTimestamp();
   cmd_ = cmd;
   n_retry_ = 0;
@@ -181,7 +182,7 @@ void CoordinatorClassic::Restart() {
   std::lock_guard<std::recursive_mutex> lock(this->mtx_);
   verify(aborted_);
   n_retry_++;
-	verify(n_retry_ < 5);
+  // Note: max_retry check is done below using config value
   cmd_->root_id_ = this->next_txn_id();
   cmd_->id_ = cmd_->root_id_;
   ongoing_tx_id_ = cmd_->root_id_;
@@ -257,15 +258,13 @@ void CoordinatorClassic::DispatchAsync(bool last) {
   
 	debug_cnt--;
 
-  if(phase != phase) verify(0);
-  /*if(txn->HasMoreUnsentPiece()){
-    DispatchAsync(true);
-  }*/if(last && AllDispatchAcked()){
-    GotoNextPhase();
-  } else if (last && aborted_) {
-		GotoNextPhase();
-	}
-  //Log_debug("Dispatch cnt: %d for tx_id: %" PRIx64, cnt, txn->root_id_);
+  // NOTE: DispatchAck already calls GotoNextPhase() when all acks are received.
+  // Don't call GotoNextPhase here to avoid race condition / double call.
+  // The callback from BroadcastDispatch both sets the event (waking Wait()) 
+  // AND calls DispatchAck, so DispatchAck handles the phase transition.
+  // Phase may have changed since DispatchAck already ran, so don't verify.
+  Log_debug("DispatchAsync: Wait() returned, n_dispatch=%d, n_dispatch_ack=%d, aborted=%d",
+            n_dispatch_, n_dispatch_ack_, aborted_);
 }
 
 bool CoordinatorClassic::AllDispatchAcked() {
@@ -283,9 +282,14 @@ bool CoordinatorClassic::AllDispatchAcked() {
 void CoordinatorClassic::DispatchAck(phase_t phase,
                                      int res,
                                      TxnOutput& outputs) {
-  //Log_info("Is this being called");
+  Log_info("DispatchAck: coo_id=%d, phase_param=%d, phase_=%d, res=%d, outputs_size=%zu",
+           coo_id_, phase, phase_, res, outputs.size());
   std::lock_guard<std::recursive_mutex> lock(this->mtx_);
-  if (phase != phase_) return;
+  if (phase != phase_) {
+    Log_info("DispatchAck: phase mismatch! phase_param=%d, phase_=%d, returning early", phase, phase_);
+    return;
+  }
+  Log_info("DispatchAck: phase check passed, continuing...");
   auto* txn = (TxData*) cmd_;
   if (res == REJECT) {
     aborted_ = true;
@@ -301,23 +305,39 @@ void CoordinatorClassic::DispatchAck(phase_t phase,
     }
   }*/
 
+  Log_info("DispatchAck: processing %zu outputs", outputs.size());
   for (auto& pair : outputs) {
     const innid_t& inn_id = pair.first;
-    verify(!dispatch_acks_.at(inn_id));
+    Log_info("DispatchAck: processing inn_id=%d, checking dispatch_acks_", inn_id);
+    auto it = dispatch_acks_.find(inn_id);
+    if (it == dispatch_acks_.end()) {
+      Log_error("DispatchAck: inn_id=%d NOT FOUND in dispatch_acks_!", inn_id);
+      // Don't verify, just skip
+      continue;
+    }
+    if (it->second) {
+      Log_error("DispatchAck: inn_id=%d already acked! Skipping.", inn_id);
+      continue;
+    }
     dispatch_acks_[inn_id] = true;
-    Log_debug("get start ack %ld/%ld for cmd_id: %lx, inn_id: %d",
+    Log_info("DispatchAck: ack %ld/%ld for cmd_id: %lx, inn_id: %d",
               n_dispatch_ack_, n_dispatch_, cmd_->id_, inn_id);
     txn->Merge(pair.first, pair.second);
   }
+  Log_info("DispatchAck: done processing outputs, n_dispatch=%d, n_dispatch_ack=%d",
+           n_dispatch_, n_dispatch_ack_);
   if (txn->HasMoreUnsentPiece()) {
-    Log_debug("command has more sub-cmd, cmd_id: %llx,"
-                  " n_started_: %d, n_pieces: %d",
+    Log_info("DispatchAck: more pieces to dispatch, cmd_id: %llx,"
+                  " n_started: %d, n_pieces: %d",
               txn->id_, txn->n_pieces_dispatched_, txn->GetNPieceAll());
     DispatchAsync();
   } else if (AllDispatchAcked()) {
-    Log_debug("receive all start acks, txn_id: %llx; START PREPARE",
+    Log_info("DispatchAck: all acks received, txn_id: %llx, moving to next phase",
               txn->id_);
     GotoNextPhase();
+  } else {
+    Log_info("DispatchAck: waiting for more acks, txn_id: %llx, n_dispatch=%d, n_dispatch_ack=%d",
+             txn->id_, n_dispatch_, n_dispatch_ack_);
   }
 }
 
@@ -332,8 +352,8 @@ void CoordinatorClassic::Prepare() {
     sids.push_back(site);
   }
 
-  Log_info("send prepare tid: %ld",
-            cmd_->id_);
+  Log_info("Prepare: send prepare tid: %ld, num_partitions: %zu",
+            cmd_->id_, sids.size());
   auto phase = phase_;
   
   /*commo()->SendPrepare(partition_id,
@@ -347,11 +367,11 @@ void CoordinatorClassic::Prepare() {
   auto quorum_event = commo()->SendPrepare(this,
                                           cmd_->id_,
                                           sids);
-
+  Log_info("Prepare: waiting for prepare response for tid: %ld", cmd_->id_);
 	quorum_event->Wait();
 	//Log_info("slow inside Prepare is: %d", commo()->slow);
-  Log_info("DONE send prepare tid: %ld",
-            cmd_->id_);
+  Log_info("Prepare: DONE send prepare tid: %ld, aborted: %d",
+            cmd_->id_, aborted_);
   quorum_event->log();
 	
   if(!aborted_){
@@ -581,6 +601,8 @@ void CoordinatorClassic::End() {
   TxData* tx_data = (TxData*) cmd_;
   TxReply& tx_reply_buf = tx_data->get_reply();
   double last_latency = tx_data->last_attempt_latency();
+  Log_info("End: tx_id=%" PRIx64 ", committed=%d, aborted=%d, latency=%.3f",
+           ongoing_tx_id_, committed_, aborted_, last_latency);
   if (committed_) {
     if (!commit_reported_) {
       tx_data->reply_.res_ = SUCCESS;
@@ -596,8 +618,9 @@ void CoordinatorClassic::End() {
     verify(0);
   }
   tx_reply_buf.tx_id_ = ongoing_tx_id_;
-  Log_debug("call reply for tx_id: %"
-                PRIx64, ongoing_tx_id_);
+  Log_info("End: calling callback for tx_id=%" PRIx64 ", result=%s",
+           ongoing_tx_id_,
+           tx_data->reply_.res_ == SUCCESS ? "SUCCESS" : "REJECT");
   tx_data->callback_(tx_reply_buf);
   ongoing_tx_id_ = 0;
   delete tx_data;

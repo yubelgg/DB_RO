@@ -63,7 +63,11 @@ void ClientWorker::RequestDone(Coordinator* coo, TxReply& txn_reply) {
   num_try.fetch_add(txn_reply.n_try_);
 
   bool have_more_time = timer_->elapsed() < duration;
-  Log_debug("received callback from tx_id %" PRIx64, txn_reply.tx_id_);
+  Log_info("RequestDone: tx_id=%" PRIx64 ", result=%s, total=%u, success=%u",
+           txn_reply.tx_id_,
+           txn_reply.res_ == SUCCESS ? "SUCCESS" : "REJECT",
+           num_txn.load(),
+           success.load());
   Log_debug("elapsed: %2.2f; duration: %d", timer_->elapsed(), duration);
   if (have_more_time && config_->client_type_ == Config::Open) {
     std::lock_guard<std::mutex> lock(coordinator_mutex);
@@ -154,17 +158,21 @@ void ClientWorker::Work() {
   timer_->start();
 
   if (config_->client_type_ == Config::Closed) {
-    Log_info("closed loop clients.");
+    Log_info("closed loop clients: n_concurrent=%d, duration=%u", n_concurrent_, duration);
     verify(n_concurrent_ > 0);
     int n = n_concurrent_;
     auto sp_job = std::make_shared<OneTimeJob>([this] () {
+      Log_info("Starting to create %d coordinators and dispatch transactions", n_concurrent_);
       for (uint32_t n_tx = 0; n_tx < n_concurrent_; n_tx++) {
         auto coo = CreateCoordinator(n_tx);
-        Log_debug("create coordinator %d", coo->coo_id_);
+        Log_info("Created coordinator %d (coo_id=%d), dispatching request...", n_tx, coo->coo_id_);
         this->DispatchRequest(coo);
       }
+      Log_info("All %d initial transactions dispatched", n_concurrent_);
     });
+    Log_info("Adding job to poll_thread_worker...");
     poll_thread_worker_->add(dynamic_pointer_cast<Job>(sp_job));
+    Log_info("Job added to poll_thread_worker, waiting for completion...");
   } else {
     Log_info("open loop clients.");
     const std::chrono::nanoseconds wait_time
@@ -199,10 +207,22 @@ void ClientWorker::Work() {
   }
 
 //  finish_mutex.lock();
+  Log_info("Entering wait loop: n_concurrent=%d, elapsed=%2.2f, duration=%u",
+           n_concurrent_, timer_->elapsed(), duration);
+  int wait_count = 0;
   while (n_concurrent_ > 0) {
-    Log_debug("wait for finish... %d", n_concurrent_);
+    wait_count++;
+    Log_info("Waiting for transactions to complete... n_concurrent=%d, wait_count=%d, elapsed=%2.2f",
+             n_concurrent_, wait_count, timer_->elapsed());
     sleep(1);
 //    finish_cond.wait(finish_mutex);
+    // Safety: exit after waiting too long (duration + 30 seconds)
+    if (wait_count > (int)(duration + 30)) {
+      Log_error("TIMEOUT: Still waiting for %d transactions after %d seconds, forcing clean exit",
+                n_concurrent_, wait_count);
+      n_concurrent_ = 0;  // Force clean exit so metrics are printed
+      break;
+    }
   }
 //  finish_mutex.unlock();
 
@@ -252,12 +272,13 @@ void ClientWorker::AcceptForwardedRequest(TxRequest& request,
 void ClientWorker::DispatchRequest(Coordinator* coo) {
   const char* f = __FUNCTION__;
   std::function<void()> task = [=]() {
-    Log_debug("%s: %d", f, cli_id_);
+    Log_info("DispatchRequest: cli_id=%d, coo_id=%d", cli_id_, coo->coo_id_);
     TxRequest req;
     {
       std::lock_guard<std::mutex> lock(this->request_gen_mutex);
       tx_generator_->GetTxRequest(&req, coo->coo_id_);
     }
+    Log_info("DispatchRequest: tx_type=%d, dispatching transaction", req.tx_type_);
     req.callback_ = std::bind(&ClientWorker::RequestDone,
                               this,
                               coo,

@@ -10,7 +10,13 @@ namespace janus {
 // Forward declaration from scheduler_enhanced.h
 enum class AbortReason;
 
+// Forward declaration for signal handler friend function
+void sigterm_handler_baseline(int);
+
 class SchedulerOcc: public SchedulerClassic {
+  // Friend declaration for signal handler to access protected members
+  friend void sigterm_handler_baseline(int);
+
  public:
   SchedulerOcc();
   virtual ~SchedulerOcc();

@@ -122,6 +122,44 @@ std::unordered_set<size_t> ConflictGraph::GetConflicts(size_t tx_idx) const {
   return it->second;
 }
 
+size_t ConflictGraph::GetConflictCount(size_t tx_idx) const {
+  auto it = adj_list_.find(tx_idx);
+  if (it == adj_list_.end()) {
+    return 0;
+  }
+  return it->second.size();
+}
+
+std::vector<size_t> ConflictGraph::GetLowConflictOrder() const {
+  if (num_nodes_ == 0) {
+    return {};
+  }
+  
+  // Create vector of (conflict_count, tx_index) pairs
+  std::vector<std::pair<size_t, size_t>> conflict_counts;
+  conflict_counts.reserve(num_nodes_);
+  
+  for (size_t i = 0; i < num_nodes_; i++) {
+    conflict_counts.push_back({GetConflictCount(i), i});
+  }
+  
+  // Sort by conflict count (ascending) - transactions with fewer conflicts first
+  std::sort(conflict_counts.begin(), conflict_counts.end(),
+            [](const auto& a, const auto& b) {
+              return a.first < b.first;
+            });
+  
+  // Extract just the indices
+  std::vector<size_t> result;
+  result.reserve(num_nodes_);
+  for (const auto& p : conflict_counts) {
+    result.push_back(p.second);
+  }
+  
+  Log_debug("GetLowConflictOrder: ordered %zu transactions by conflict count", num_nodes_);
+  return result;
+}
+
 std::vector<std::vector<size_t>> ConflictGraph::FindIndependentSets() {
   if (num_nodes_ == 0) {
     return {};

@@ -82,6 +82,13 @@ private:
                            BatchValidationResult& result);
 
   /**
+   * Validate batch with smart ordering (conflict-aware)
+   * Prioritizes transactions with fewer conflicts
+   */
+  void ValidateBatchSmart(const std::vector<TxOccEnhanced*>& batch,
+                          BatchValidationResult& result);
+
+  /**
    * Validate batch in parallel using conflict graph
    */
   void ValidateBatchParallel(const std::vector<TxOccEnhanced*>& batch,

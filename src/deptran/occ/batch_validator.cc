@@ -55,14 +55,15 @@ BatchValidator::ValidateBatch(const std::vector<TxOccEnhanced *> &batch) {
 
   auto start_time = std::chrono::steady_clock::now();
 
-  // Decide: serial or parallel validation?
-  // Use parallel validation if batch is large enough and we have workers
-  bool use_parallel = (batch.size() >= static_cast<size_t>(Config::GetConfig()->get_parallel_threshold())
-                       && num_workers_ > 0);
-
-  if (use_parallel) {
+  // Decide validation strategy based on batch size
+  size_t parallel_threshold = static_cast<size_t>(Config::GetConfig()->get_parallel_threshold());
+  
+  if (batch.size() >= parallel_threshold && num_workers_ > 0) {
+    // Large batch: use parallel validation with conflict graph
     ValidateBatchParallel(batch, result);
   } else {
+    // For now, use serial validation for all batch sizes
+    // Smart ordering can be enabled later when performance is verified
     ValidateBatchSerial(batch, result);
   }
 
@@ -70,8 +71,8 @@ BatchValidator::ValidateBatch(const std::vector<TxOccEnhanced *> &batch) {
   result.total_time = std::chrono::duration_cast<std::chrono::microseconds>(
       end_time - start_time);
 
-  Log_debug("Batch %llu validated: %zu txns, %lld us, parallel=%d",
-            result.batch_id, batch.size(), result.total_time.count(), use_parallel);
+  Log_debug("Batch %llu validated: %zu txns, %lld us",
+            result.batch_id, batch.size(), result.total_time.count());
 
   return result;
 }
@@ -99,6 +100,68 @@ void BatchValidator::ValidateBatchSerial(
       tx->GetBatchMetadata().validation_promise->set_value(passed);
     }
   }
+}
+
+void BatchValidator::ValidateBatchSmart(
+    const std::vector<TxOccEnhanced *> &batch,
+    BatchValidationResult &result) {
+  
+  // Step 1: Build conflict graph to analyze transaction dependencies
+  ConflictGraph conflict_graph;
+  conflict_graph.Build(batch);
+  
+  // Step 2: Get order prioritizing low-conflict transactions
+  // Transactions with fewer conflicts are more likely to succeed
+  auto order = conflict_graph.GetLowConflictOrder();
+  
+  Log_debug("ValidateBatchSmart: batch=%zu, edges=%zu, using smart ordering",
+            batch.size(), conflict_graph.NumEdges());
+  
+  // Step 3: Track which transactions are "doomed" (conflict with committed tx)
+  std::unordered_set<size_t> doomed_txs;
+  
+  // Step 4: Validate in smart order
+  for (size_t idx : order) {
+    TxOccEnhanced *tx = batch[idx];
+    
+    // Skip if this transaction conflicts with an already-committed transaction
+    // It will fail validation anyway, so save the effort
+    bool is_doomed = doomed_txs.count(idx) > 0;
+    bool passed = false;
+    
+    if (!is_doomed) {
+      // Try to validate
+      passed = ValidateSingle(tx);
+      
+      if (passed) {
+        // This transaction committed - mark all conflicting transactions as doomed
+        auto conflicts = conflict_graph.GetConflicts(idx);
+        for (size_t conflict_idx : conflicts) {
+          doomed_txs.insert(conflict_idx);
+        }
+        Log_debug("Tx %zu committed, marking %zu conflicting txs as doomed",
+                  idx, conflicts.size());
+      }
+    } else {
+      Log_debug("Tx %zu skipped validation (doomed by earlier commit)", idx);
+    }
+    
+    result.passed[idx] = passed;
+    
+    // Update transaction's batch metadata
+    tx->GetBatchMetadata().batch_id = result.batch_id;
+    tx->GetBatchMetadata().position_in_batch = idx;
+    tx->GetBatchMetadata().validated = true;
+    tx->GetBatchMetadata().passed = passed;
+    
+    // Signal waiting DoPrepare() that validation is complete
+    if (tx->GetBatchMetadata().validation_promise) {
+      tx->GetBatchMetadata().validation_promise->set_value(passed);
+    }
+  }
+  
+  Log_debug("ValidateBatchSmart: %zu doomed txs avoided validation",
+            doomed_txs.size());
 }
 
 void BatchValidator::ValidateBatchParallel(
@@ -194,7 +257,7 @@ bool BatchValidator::ValidateSingle(TxOccEnhanced *tx) {
     return false;
   }
 
-  // Acquire read locks
+  // Acquire read locks (no retry - immediate abort on conflict)
   for (auto &it : txn->ver_check_read_) {
     Row *row = it.first.row;
     auto *v_row = (VersionedRow *)row;
@@ -215,7 +278,7 @@ bool BatchValidator::ValidateSingle(TxOccEnhanced *tx) {
     insert_into_map(txn->locks_, row, -1);
   }
 
-  // Acquire write locks
+  // Acquire write locks (no retry - immediate abort on conflict)
   for (auto &it : txn->updates_) {
     Row *row = it.first;
     auto *v_row = (VersionedRow *)row;
@@ -229,8 +292,7 @@ bool BatchValidator::ValidateSingle(TxOccEnhanced *tx) {
         vr->unlock_row_by(txn->id());
       }
       txn->locks_.clear();
-      Log_debug("batch validation: write lock failed for tx %" PRIx64,
-                tx->tid_);
+      Log_debug("batch validation: write lock failed for tx %" PRIx64, tx->tid_);
       txn->__debug_abort_ = 1;
       return false;
     }

@@ -1,9 +1,10 @@
-# Enhanced OCC - Full Configuration
+# Enhanced OCC - Full Configuration - HIGH CONTENTION
 # Both batch validation and early abort enabled
 #
-# Usage: ./build/labtest -f config/occ_full.yml
+# Usage: ./build/labtest -f config/occ_full_high_contention.yml -d 60 -n 8
 #
-# Purpose: Full Enhanced OCC with both features (best performance)
+# Purpose: High contention test to measure abort rates and throughput improvements
+# Uses small table (10 keys) to force conflicts between transactions
 
 site:
   server:
@@ -29,7 +30,7 @@ mode:
 batch_validation:
   enabled: true          # ENABLED
   batch_size: 64         # Larger max batch size
-  batch_timeout_us: 5000 # 5ms - more time for batch to fill (reduces sync overhead)
+  batch_timeout_us: 100 # 5ms - more time for batch to fill (reduces sync overhead)
   num_workers: 4
   parallel_threshold: 8  # Higher threshold for parallel validation
 
@@ -38,6 +39,7 @@ early_abort:
   check_interval: 10
   bloom_filter_size: 10000
 
+# Workload: RW benchmark with HIGH contention
 bench:
   workload: rw
   scale: 1
@@ -45,7 +47,7 @@ bench:
     read: 0.5
     write: 0.5
   population:
-    history: 1000
+    history: 10          # SMALL table (10 keys) = HIGH contention
 
 schema:
   - name: history

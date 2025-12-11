@@ -48,6 +48,7 @@ void ClassicServiceImpl::Dispatch(const i64& cmd_id,
                                   TxnOutput* output,
                                   uint64_t* coro_id,
                                   rrr::DeferredReply* defer) {
+  Log_info("ClassicServiceImpl::Dispatch: received cmd_id=%" PRIx64, cmd_id);
 #ifdef PIECE_COUNT
   piece_count_key_t piece_count_key =
       (piece_count_key_t){header.t_type, header.p_type};
@@ -66,6 +67,9 @@ void ClassicServiceImpl::Dispatch(const i64& cmd_id,
     *res = SUCCESS;
     if (!dtxn_sched()->Dispatch(cmd_id, sp, *output)) {
       *res = REJECT;
+      Log_info("ClassicServiceImpl::Dispatch: cmd_id=%" PRIx64 " REJECTED", cmd_id);
+    } else {
+      Log_info("ClassicServiceImpl::Dispatch: cmd_id=%" PRIx64 " SUCCESS, output_size=%zu", cmd_id, output->size());
     }
     *coro_id = Coroutine::CurrentCoroutine()->id;
     defer->reply();
