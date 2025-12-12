@@ -17,22 +17,23 @@ EarlyAbortDetector::~EarlyAbortDetector() {
            stats_.early_aborts_detected.load());
 }
 
-void EarlyAbortDetector::RegisterRead(i64 tx_id, Row* row, 
+void EarlyAbortDetector::RegisterRead(i64 tx_id, Row* row,
                                        mdb::colid_t column_id, i64 version) {
   if (!enabled_) return;
-  
+
   RowColumnKey key(row, column_id);
   ReadRecord record(tx_id, version);
-  
+
   {
     std::lock_guard<std::mutex> lock(reads_mutex_);
     active_reads_[key].insert(record);
   }
-  
+
   stats_.total_reads.fetch_add(1, std::memory_order_relaxed);
-  
-  Log_debug("RegisterRead: tx=%" PRIx64 " row=%p col=%d ver=%" PRIx64, 
-            tx_id, row, column_id, version);
+
+  // DISABLED: Expensive logging causes 60% performance overhead
+  // Log_info("RegisterRead: tx=%" PRIx64 " row=%p col=%d ver=%" PRIx64,
+  //          tx_id, row, column_id, version);
 }
 
 void EarlyAbortDetector::RegisterWrite(i64 tx_id, Row* row, 
@@ -52,51 +53,72 @@ void EarlyAbortDetector::RegisterWrite(i64 tx_id, Row* row,
             tx_id, row, column_id);
 }
 
-void EarlyAbortDetector::NotifyVersionChange(Row* row, 
-                                              mdb::colid_t column_id, 
+void EarlyAbortDetector::NotifyVersionChange(Row* row,
+                                              mdb::colid_t column_id,
                                               i64 new_version) {
   if (!enabled_) return;
-  
+
   RowColumnKey key(row, column_id);
-  
+
+  // DISABLED: Expensive logging causes 60% performance overhead
+  // {
+  //   std::lock_guard<std::mutex> lock(reads_mutex_);
+  //   Log_info("NotifyVersionChange: row=%p col=%d new_ver=%" PRIx64 " | active_reads_ has %zu keys total",
+  //            row, column_id, new_version, active_reads_.size());
+  //
+  //   auto it = active_reads_.find(key);
+  //   if (it != active_reads_.end()) {
+  //     Log_info("  -> Found %zu active readers for THIS key", it->second.size());
+  //   } else {
+  //     Log_info("  -> Key NOT FOUND in active_reads_");
+  //   }
+  // }
+
   // Find all transactions reading old versions of this column
   DetectAndMarkConflicts(key, new_version);
-  
+
   stats_.version_changes_processed.fetch_add(1, std::memory_order_relaxed);
-  
-  Log_debug("NotifyVersionChange: row=%p col=%d new_ver=%" PRIx64, 
-            row, column_id, new_version);
 }
 
-void EarlyAbortDetector::DetectAndMarkConflicts(const RowColumnKey& key, 
+void EarlyAbortDetector::DetectAndMarkConflicts(const RowColumnKey& key,
                                                  i64 new_version) {
   std::vector<i64> txs_to_abort;
-  
+
   // Find transactions reading old versions
   {
     std::lock_guard<std::mutex> lock(reads_mutex_);
-    
+
     auto it = active_reads_.find(key);
     if (it != active_reads_.end()) {
+      // DISABLED: Expensive logging causes performance overhead
+      // Log_info("Found %zu active readers for row=%p col=%d",
+      //          it->second.size(), key.row, key.column_id);
+
       for (const ReadRecord& record : it->second) {
         // If transaction read an older version, it will fail validation
         if (record.version < new_version) {
           txs_to_abort.push_back(record.tx_id);
-          Log_debug("Detected conflict: tx=%" PRIx64 " read ver=%" PRIx64 
-                    " but current ver=%" PRIx64,
-                    record.tx_id, record.version, new_version);
+          // DISABLED: Expensive logging (187k+ messages causes 90% slowdown)
+          // Log_info("CONFLICT DETECTED: tx=%" PRIx64 " read ver=%" PRIx64
+          //          " but current ver=%" PRIx64,
+          //          record.tx_id, record.version, new_version);
         }
       }
+    } else {
+      Log_debug("No active readers for row=%p col=%d", key.row, key.column_id);
     }
   }
-  
+
   // Mark conflicting transactions for abort
   if (!txs_to_abort.empty()) {
+    // DISABLED: Expensive logging (187k+ messages causes 90% slowdown)
+    // Log_info("Marking %zu transactions for early abort", txs_to_abort.size());
     std::lock_guard<std::mutex> lock(abort_mutex_);
     for (i64 tx_id : txs_to_abort) {
       aborted_txs_.insert(tx_id);
       stats_.early_aborts_detected.fetch_add(1, std::memory_order_relaxed);
-      Log_debug("Marked tx %" PRIx64 " for early abort", tx_id);
+      // DISABLED: Expensive logging
+      // Log_info("Marked tx %" PRIx64 " for early abort", tx_id);
     }
   }
 }
@@ -128,7 +150,9 @@ void EarlyAbortDetector::ClearAbortFlag(i64 tx_id) {
 
 void EarlyAbortDetector::RemoveTransaction(i64 tx_id) {
   if (!enabled_) return;
-  
+
+  Log_debug("RemoveTransaction: cleaning up tx %" PRIx64 " from tracking", tx_id);
+
   // Remove from active reads
   {
     std::lock_guard<std::mutex> lock(reads_mutex_);

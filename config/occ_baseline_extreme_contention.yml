@@ -1,0 +1,49 @@
+# Baseline OCC - EXTREME CONTENTION Test
+# Purpose: Baseline comparison with 3 keys and 16 concurrent clients
+#
+# Should produce 40-60% abort rate to demonstrate the problem
+
+site:
+  server:
+    - ["s101:8100"]
+  client:
+    - ["c101"]
+
+process:
+  s101: localhost
+  c101: localhost
+
+host:
+  localhost: 127.0.0.1
+
+n_concurrent: 16  # 16 concurrent transactions
+
+mode:
+  cc: occ  # BASELINE OCC (not enhanced)
+  ab: none
+  read_only: occ
+  batch: false
+  retry: 20
+  ongoing: 16  # 16 concurrent transactions
+
+# NO batch_validation section (baseline doesn't have this)
+# NO early_abort section (baseline doesn't have this)
+
+# Workload: RW benchmark with EXTREME contention
+bench:
+  workload: rw
+  scale: 1
+  weight:
+    read: 0.5
+    write: 0.5
+  population:
+    history: 3  # Only 3 keys = EXTREME contention
+
+schema:
+  - name: history
+    column:
+      - {name: h_key, type: integer, primary: true}
+      - {name: h_c_id, type: integer}
+
+sharding:
+  history: MOD

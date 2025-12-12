@@ -345,6 +345,40 @@ void Config::LoadYML(std::string &filename) {
   if (config["n_parallel_dispatch"]) {
     n_parallel_dispatch_ = config["n_parallel_dispatch"].as<int32_t>();
   }
+
+  // Parse Enhanced OCC batch_validation section (at root level)
+  if (config["batch_validation"]) {
+    auto batch_config = config["batch_validation"];
+    batch_validation_enabled_ = batch_config["enabled"].as<bool>(false);
+    if (batch_config["batch_size"]) {
+      batch_size_ = batch_config["batch_size"].as<int32_t>(32);
+    }
+    if (batch_config["batch_timeout_us"]) {
+      batch_timeout_us_ = batch_config["batch_timeout_us"].as<int32_t>(100);
+    }
+    if (batch_config["num_workers"]) {
+      num_workers_ = batch_config["num_workers"].as<int32_t>(8);
+    }
+    if (batch_config["parallel_threshold"]) {
+      parallel_threshold_ = batch_config["parallel_threshold"].as<int32_t>(4);
+    }
+    Log_info("Enhanced OCC batch validation: enabled=%d, batch_size=%d, timeout=%dus, workers=%d, threshold=%d",
+             batch_validation_enabled_, batch_size_, batch_timeout_us_, num_workers_, parallel_threshold_);
+  }
+
+  // Parse Enhanced OCC early_abort section (at root level)
+  if (config["early_abort"]) {
+    auto abort_config = config["early_abort"];
+    early_abort_enabled_ = abort_config["enabled"].as<bool>(false);
+    if (abort_config["check_interval"]) {
+      check_interval_ = abort_config["check_interval"].as<int32_t>(10);
+    }
+    if (abort_config["bloom_filter_size"]) {
+      bloom_filter_size_ = abort_config["bloom_filter_size"].as<int32_t>(10000);
+    }
+    Log_info("Enhanced OCC early abort: enabled=%d, check_interval=%d, bloom_filter_size=%d",
+             early_abort_enabled_, check_interval_, bloom_filter_size_);
+  }
 }
 
 void Config::LoadSiteYML(YAML::Node config) {

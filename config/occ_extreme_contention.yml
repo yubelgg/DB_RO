@@ -1,0 +1,61 @@
+# Enhanced OCC - EXTREME CONTENTION Test
+# Purpose: Force transaction conflicts to demonstrate early abort detection
+#
+# Key changes to create contention:
+# - Only 3 keys (forces conflicts)
+# - 16 concurrent clients (many transactions competing)
+# - This should produce 40-60% abort rate on baseline OCC
+
+site:
+  server:
+    - ["s101:8100"]
+  client:
+    - ["c101"]
+
+process:
+  s101: localhost
+  c101: localhost
+
+host:
+  localhost: 127.0.0.1
+
+n_concurrent: 16  # 16 concurrent transactions (THIS is the parameter that matters!)
+
+mode:
+  cc: occ_enhanced
+  ab: none
+  read_only: occ_enhanced
+  batch: false
+  retry: 20
+  ongoing: 16  # INCREASED: 16 concurrent transactions (was 1)
+
+batch_validation:
+  enabled: true
+  batch_size: 64
+  batch_timeout_us: 100
+  num_workers: 4
+  parallel_threshold: 8
+
+early_abort:
+  enabled: true
+  check_interval: 10
+  bloom_filter_size: 10000
+
+# Workload: RW benchmark with EXTREME contention
+bench:
+  workload: rw
+  scale: 1
+  weight:
+    read: 0.5
+    write: 0.5
+  population:
+    history: 3  # REDUCED: Only 3 keys = EXTREME contention (was 10)
+
+schema:
+  - name: history
+    column:
+      - {name: h_key, type: integer, primary: true}
+      - {name: h_c_id, type: integer}
+
+sharding:
+  history: MOD

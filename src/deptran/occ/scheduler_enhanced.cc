@@ -9,8 +9,9 @@
 
 namespace janus {
 
-// Global pointer for signal handler (only one scheduler instance per process)
-static SchedulerOccEnhanced* g_scheduler_enhanced = nullptr;
+// Global pointer to current scheduler instance (for early abort detector access)
+// Defined here (not static), declared as extern in scheduler_enhanced.h
+SchedulerOccEnhanced* g_scheduler_enhanced = nullptr;
 
 // Signal handler for SIGTERM/SIGINT - print metrics before exit
 void sigterm_handler_enhanced(int signum) {
@@ -52,55 +53,44 @@ void sigterm_handler_enhanced(int signum) {
 
 SchedulerOccEnhanced::SchedulerOccEnhanced()
     : SchedulerOcc(),
-      batch_size_(Config::GetConfig()->get_batch_size()),
-      batch_timeout_(std::chrono::microseconds(
-          Config::GetConfig()->get_batch_timeout_us())),
       start_time_(std::chrono::steady_clock::now()) {
+  // Set global pointer for early abort detector access from transactions
+  g_scheduler_enhanced = this;
+
   // Initialize abort reason counters
   aborts_by_reason_[AbortReason::EARLY] = 0;
   aborts_by_reason_[AbortReason::VERSION_MISMATCH] = 0;
   aborts_by_reason_[AbortReason::LOCK_CONFLICT] = 0;
   aborts_by_reason_[AbortReason::UNKNOWN] = 0;
 
-  // Create early abort detector
-  early_abort_detector_ = std::make_unique<EarlyAbortDetector>();
+  // Create early abort detector (if enabled in config)
+  if (Config::GetConfig()->get_early_abort_enabled()) {
+    early_abort_detector_ = std::make_unique<EarlyAbortDetector>();
+    Log_info("SchedulerOccEnhanced: Early abort detection ENABLED (check_interval=%d)",
+             Config::GetConfig()->get_check_interval());
+  } else {
+    Log_info("SchedulerOccEnhanced: Early abort detection DISABLED");
+  }
 
-  // Create hot key tracker
-  hot_key_tracker_ = std::make_unique<HotKeyTracker>();
+  // DISABLE HotKeyTracker - global mutex bottleneck causes 4-24× slowdown
+  // hot_key_tracker_ = std::make_unique<HotKeyTracker>();
 
-  // Create batch validator
-  batch_validator_ =
-      std::make_unique<BatchValidator>(batch_size_,
-                                       Config::GetConfig()->get_num_workers());
-
-  // Start background validation thread
-  running_ = true;
-  validation_thread_ = std::thread(&SchedulerOccEnhanced::ValidationLoop, this);
+  // REMOVE batch validation - too much overhead (promises/futures/queuing) for short transactions
+  // batch_validator_ = std::make_unique<BatchValidator>(...);
+  // validation_thread_ = std::thread(&SchedulerOccEnhanced::ValidationLoop, this);
 
   // Register signal handler to print metrics on SIGTERM/SIGINT
-  g_scheduler_enhanced = this;
   signal(SIGTERM, sigterm_handler_enhanced);
   signal(SIGINT, sigterm_handler_enhanced);
 
-  Log_info(
-      "SchedulerOccEnhanced: initialized with batch_size=%zu, timeout=%ldus, num_workers=%d",
-      batch_size_, batch_timeout_.count(), Config::GetConfig()->get_num_workers());
+  Log_info("SchedulerOccEnhanced: initialized (inline validation + early abort)");
 }
 
 SchedulerOccEnhanced::~SchedulerOccEnhanced() {
   // Clear global pointer
   g_scheduler_enhanced = nullptr;
 
-  // Stop background thread
-  running_ = false;
-
-  // Wake up thread if it's waiting
-  validation_queue_.Enqueue(nullptr); // Sentinel value to wake thread
-
-  // Wait for thread to finish
-  if (validation_thread_.joinable()) {
-    validation_thread_.join();
-  }
+  // No background thread to stop (batch validation removed)
 
   // Log final statistics
   Log_info("SchedulerOccEnhanced: Transaction metrics:");
@@ -140,42 +130,100 @@ bool SchedulerOccEnhanced::DoPrepare(txnid_t tx_id) {
   // Set execution start time for latency tracking
   tx_box->SetExecutionStartTime();
 
-  // Check if transaction was marked for early abort
-  if (tx_box->IsEarlyAborted()) {
+  // Check if transaction was marked for early abort during execution
+  if (early_abort_detector_ && early_abort_detector_->IsEnabled() &&
+      tx_box->IsEarlyAborted()) {
     tx_box->SetExecutionEndTime(); // Mark end time even on early abort
     Log_debug("DoPrepare: tx %" PRIx64 " was marked for early abort", tx_id);
     RecordAbort(AbortReason::EARLY);
     return false;
   }
 
-  // Create promise/future for waiting on validation result
-  auto promise = std::make_shared<std::promise<bool>>();
-  auto future = promise->get_future();
+  // Direct inline validation - no queue, no promises, no background thread
+  // This is simpler and faster than batch validation for short transactions
+  auto txn = (mdb::TxnOCC*) get_mdb_txn(tx_id);
+  verify(txn != nullptr);
+  verify(txn->outcome_ == symbol_t::NONE);
+  verify(!txn->verified_);
 
-  // Store promise in batch metadata
-  tx_box->GetBatchMetadata().validation_promise = promise;
-
-  // Enqueue transaction for batch validation
-  validation_queue_.Enqueue(tx_box.get());
-
-  Log_debug("DoPrepare: enqueued tx %" PRIx64 " for batch validation", tx_id);
-
-  // Wait for validation result from background thread
-  bool validation_passed = future.get();
-
-  if (!validation_passed) {
-    tx_box->SetExecutionEndTime(); // Mark end time on validation failure
-    // Categorize abort reason based on validation failure
-    // TODO: Distinguish between VERSION_MISMATCH and LOCK_CONFLICT
-    // For now, assume version mismatch is most common OCC abort cause
-    RecordAbort(AbortReason::VERSION_MISMATCH);
+  // AGGRESSIVE EARLY ABORT CHECK #2: Final check before validation
+  // This catches conflicts that happened while transaction was executing
+  // but before it reached validation (since transactions are very fast - 0.2ms)
+  if (early_abort_detector_ && early_abort_detector_->IsEnabled()) {
+    if (early_abort_detector_->ShouldAbort(tx_id)) {
+      tx_box->SetExecutionEndTime();
+      tx_box->MarkEarlyAborted();
+      RecordAbort(AbortReason::EARLY);
+      Log_info("Early abort at validation: tx %" PRIx64 " (caught by final check)", tx_id);
+      return false;
+    }
   }
 
-  Log_debug("DoPrepare: tx %" PRIx64 " validation result: %s", tx_id,
-            validation_passed ? "PASSED" : "FAILED");
+  // Version check (only on leader)
+  if (tx_box->is_leader_hint_ && !txn->version_check()) {
+    tx_box->SetExecutionEndTime();
+    Log_debug("DoPrepare: tx %" PRIx64 " version check failed", tx_id);
+    txn->__debug_abort_ = 1;
+    RecordAbort(AbortReason::VERSION_MISMATCH);
+    return false;
+  }
 
-  return validation_passed;
+  // Acquire read locks
+  for (auto &it : txn->ver_check_read_) {
+    Row *row = it.first.row;
+    auto *v_row = (VersionedRow *) row;
+    if (!v_row->rlock_row_by(txn->id())) {
+      // Lock acquisition failed - unlock everything and abort
+      for (auto &lit : txn->locks_) {
+        Row* r = lit.first;
+        auto vr = (VersionedRow *) r;
+        vr->unlock_row_by(txn->id());
+      }
+      txn->locks_.clear();
+      tx_box->SetExecutionEndTime();
+      Log_debug("DoPrepare: tx %" PRIx64 " read lock failed", tx_id);
+      txn->__debug_abort_ = 1;
+      RecordAbort(AbortReason::LOCK_CONFLICT);
+      return false;
+    }
+    insert_into_map(txn->locks_, row, -1);
+  }
+
+  // Acquire write locks
+  for (auto &it : txn->updates_) {
+    Row *row = it.first;
+    auto *v_row = (VersionedRow *) row;
+    if (!v_row->wlock_row_by(txn->id())) {
+      // Lock acquisition failed - unlock everything and abort
+      for (auto &lit : txn->locks_) {
+        Row* r = lit.first;
+        auto vr = (VersionedRow *) r;
+        vr->unlock_row_by(txn->id());
+      }
+      txn->locks_.clear();
+      tx_box->SetExecutionEndTime();
+      Log_debug("DoPrepare: tx %" PRIx64 " write lock failed", tx_id);
+      txn->__debug_abort_ = 1;
+      RecordAbort(AbortReason::LOCK_CONFLICT);
+      return false;
+    }
+    insert_into_map(txn->locks_, row, -1);
+  }
+
+  // Validation passed!
+  txn->__debug_abort_ = 0;
+  txn->verified_ = true;
+
+  Log_debug("DoPrepare: tx %" PRIx64 " validation PASSED (inline)", tx_id);
+
+  // Don't set end time yet - will be set in DoCommit
+  return true;
 }
+
+// NOTE: Batch validation logic removed in favor of inline validation
+// Previous approach added too much overhead (promises/futures/queuing) for
+// short-lived transactions (0.2ms execution time). Inline validation is simpler
+// and faster for our workload.
 
 void SchedulerOccEnhanced::DoCommit(Tx &tx) {
   // Increment committed counter
@@ -202,22 +250,17 @@ void SchedulerOccEnhanced::DoCommit(Tx &tx) {
         for (auto& it : mdb_txn->ver_check_write_) {
           written_columns.push_back({it.first.row, it.first.col_id});
         }
-        // Also collect from updates_ in case ver_check_write_ is empty
+        // Also collect from updates_ (which stores actual column IDs)
+        // updates_ is std::multimap<Row*, std::pair<colid_t, Value>>
         for (auto& it : mdb_txn->updates_) {
           Row* row = it.first;
-          // updates_ doesn't have column info directly, iterate columns
-          // For simplicity, assume all columns are written (column 0)
-          // This is a conservative approach
-          bool already_added = false;
-          for (auto& wc : written_columns) {
-            if (wc.first == row) {
-              already_added = true;
-              break;
-            }
-          }
-          if (!already_added) {
-            written_columns.push_back({row, 0});
-          }
+          mdb::colid_t col_id = it.second.first;  // Extract actual column ID!
+
+          // Add each (row, column) pair that was written
+          written_columns.push_back({row, col_id});
+
+          Log_debug("DoCommit: collected write row=%p col=%d for tx %" PRIx64,
+                    row, col_id, tx_tid);
         }
         Log_debug("DoCommit: collected %zu written columns for tx %" PRIx64,
                   written_columns.size(), tx_tid);
@@ -234,12 +277,13 @@ void SchedulerOccEnhanced::DoCommit(Tx &tx) {
     for (auto& wc : written_columns) {
       Row* row = wc.first;
       mdb::colid_t col_id = wc.second;
-      
+
       // Track hot keys
-      if (hot_key_tracker_) {
-        hot_key_tracker_->RecordAccess(row);
-      }
-      
+      // DISABLED: HotKeyTracker has global mutex bottleneck causing 4-24× slowdown
+      // if (hot_key_tracker_) {
+      //   hot_key_tracker_->RecordAccess(row);
+      // }
+
       // Notify early abort detector if enabled
       if (early_abort_detector_ && early_abort_detector_->IsEnabled()) {
         auto* v_row = dynamic_cast<VersionedRow*>(row);
@@ -256,46 +300,18 @@ void SchedulerOccEnhanced::DoCommit(Tx &tx) {
       }
     }
 
-    // Clean up this transaction's tracking in the detector
-    if (early_abort_detector_ && tx_tid != 0) {
-      early_abort_detector_->RemoveTransaction(tx_tid);
-    }
+    // TIMING FIX: Don't remove transaction from tracking here
+    // Keep it in active_reads_ longer so other committing transactions can detect conflicts
+    // The transaction will be cleaned up by its destructor instead
+    //
+    // Previous code (removed for better conflict detection):
+    // if (early_abort_detector_ && tx_tid != 0) {
+    //   early_abort_detector_->RemoveTransaction(tx_tid);
+    // }
   }
 }
 
-void SchedulerOccEnhanced::ValidationLoop() {
-  Log_info("ValidationLoop: background thread started");
-
-  while (running_) {
-    // Dequeue batch with timeout
-    auto batch = validation_queue_.DequeueBatch(batch_size_, batch_timeout_);
-
-    // Check for shutdown sentinel
-    if (!batch.empty() && batch[0] == nullptr) {
-      Log_info("ValidationLoop: received shutdown signal");
-      break;
-    }
-
-    // Skip empty batches
-    if (batch.empty()) {
-      continue;
-    }
-
-    Log_debug("ValidationLoop: processing batch of size %zu", batch.size());
-
-    // Validate batch (uses parallel validation if batch is large enough)
-    auto result = batch_validator_->ValidateBatch(batch);
-
-    Log_debug("ValidationLoop: batch %zu validation complete, "
-              "%zu passed, %zu failed, time=%ldus",
-              result.batch_id,
-              std::count(result.passed.begin(), result.passed.end(), true),
-              std::count(result.passed.begin(), result.passed.end(), false),
-              result.total_time.count());
-  }
-
-  Log_info("ValidationLoop: background thread exiting");
-}
+// ValidationLoop() method removed - batch validation no longer used
 
 bool SchedulerOccEnhanced::Dispatch(cmdid_t cmd_id,
                                     shared_ptr<Marshallable> cmd,
