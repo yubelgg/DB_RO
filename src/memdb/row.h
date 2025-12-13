@@ -6,6 +6,8 @@
 #include <vector>
 #include <string>
 #include <ctime>
+#include <atomic>
+#include <memory>
 #include <boost/crc.hpp>      // for boost::crc_basic, boost::crc_optimal
 
 #include "utils.h"
@@ -282,7 +284,8 @@ class CoarseLockedRow: public Row {
 
   void copy_into(CoarseLockedRow *row) const {
     this->Row::copy_into((Row *) row);
-    row->lock_ = lock_;
+    // Note: Do not copy lock_ - each row gets its own fresh lock state
+    // The new RWLock is default-constructed (unlocked)
   }
 
  public:
@@ -533,7 +536,8 @@ class FineLockedRow: public Row {
 class VersionedRow: public CoarseLockedRow {
  public:
 //  version_t *ver_ = nullptr;
-  std::vector<version_t> ver_{};
+  std::unique_ptr<std::atomic<version_t>[]> ver_{};  // Thread-safe: atomic version counter
+  int ver_size_ = 0;  // Track size for bounds checking
   // only for tapir. TODO: extract
   std::vector<list<version_t>> prepared_rver_{};
   // only for tapir. TODO: extract
@@ -541,7 +545,8 @@ class VersionedRow: public CoarseLockedRow {
   void init_ver(int n_columns) {
 //    ver_ = new version_t[n_columns];
 //    memset(ver_, 0, sizeof(version_t) * n_columns);
-    ver_.resize(n_columns, 0);
+    ver_.reset(new std::atomic<version_t>[n_columns]());  // Value-initialized to 0
+    ver_size_ = n_columns;
     prepared_rver_.resize(n_columns, {});
     prepared_wver_.resize(n_columns, {});
   }
@@ -592,8 +597,12 @@ class VersionedRow: public CoarseLockedRow {
     int n_columns = schema_->columns_count();
     row->init_ver(n_columns);
 //    memcpy(row->ver_, this->ver_, n_columns * sizeof(version_t));
-    row->ver_ = this->ver_;
-    verify(row->ver_.size() > 0);
+    // Copy atomic values manually (std::atomic is not copyable)
+    for (int i = 0; i < n_columns; i++) {
+      row->ver_[i].store(this->ver_[i].load(std::memory_order_acquire),
+                         std::memory_order_release);
+    }
+    verify(row->ver_size_ > 0);
   }
 
  public:
@@ -603,17 +612,17 @@ class VersionedRow: public CoarseLockedRow {
   }
 
   version_t get_column_ver(colid_t column_id) const {
-    verify(ver_.size() > 0);
-    verify(column_id < ver_.size());
-    return ver_[column_id];
+    verify(ver_size_ > 0);
+    verify(column_id < ver_size_);
+    return ver_[column_id].load(std::memory_order_acquire);
   }
 
   void set_column_ver(colid_t column_id, version_t ver) {
-    ver_[column_id] = ver;
+    ver_[column_id].store(ver, std::memory_order_release);
   }
 
   void incr_column_ver(colid_t column_id) {
-    ver_[column_id] ++;
+    ver_[column_id].fetch_add(1, std::memory_order_acq_rel);
   }
 
   virtual Row *copy() const {

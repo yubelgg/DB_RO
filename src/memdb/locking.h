@@ -1,6 +1,7 @@
 #pragma once
 
 #include <unordered_set>
+#include <mutex>
 
 #include "utils.h"
 
@@ -9,6 +10,7 @@ namespace mdb {
 typedef i64 lock_owner_t;
 
 class RWLock {
+    mutable std::mutex mtx_;  // Thread-safety: protects all lock operations
     bool wlocked_;
     lock_owner_t w_;    // write access owner
     std::unordered_set<lock_owner_t> r_; // read access owner
@@ -17,14 +19,17 @@ public:
 
     RWLock(): wlocked_(false), w_(0) {}
     bool is_wlocked() const {
+        std::lock_guard<std::mutex> lock(mtx_);
         assert(!wlocked_ || r_.empty());
         return wlocked_;
     }
     bool is_rlocked() const {
+        std::lock_guard<std::mutex> lock(mtx_);
         assert(!wlocked_ || r_.empty());
         return !r_.empty();
     }
     bool wlock_by(lock_owner_t o) {
+        std::lock_guard<std::mutex> lock(mtx_);
         if (wlocked_) {
             return o == w_;
         } else if (r_.empty()) {
@@ -46,6 +51,7 @@ public:
         }
     }
     bool rlock_by(lock_owner_t o) {
+        std::lock_guard<std::mutex> lock(mtx_);
         if (wlocked_) {
             return o == w_;
         } else {
@@ -54,6 +60,7 @@ public:
         }
     }
     bool unlock_by(lock_owner_t o) {
+        std::lock_guard<std::mutex> lock(mtx_);
         bool ret = false;
         if (wlocked_ && o == w_) {
             wlocked_ = false;
@@ -66,10 +73,12 @@ public:
         return ret;
     }
     lock_owner_t wlock_owner() const {
+        std::lock_guard<std::mutex> lock(mtx_);
         verify(wlocked_);
         return w_;
     }
     const std::unordered_set<lock_owner_t>& rlock_owner() const {
+        std::lock_guard<std::mutex> lock(mtx_);
         return r_;
     }
 };

@@ -77,22 +77,41 @@ SchedulerOccEnhanced::SchedulerOccEnhanced()
   // DISABLE HotKeyTracker - global mutex bottleneck causes 4-24× slowdown
   // hot_key_tracker_ = std::make_unique<HotKeyTracker>();
 
-  // REMOVE batch validation - too much overhead (promises/futures/queuing) for short transactions
-  // batch_validator_ = std::make_unique<BatchValidator>(...);
-  // validation_thread_ = std::thread(&SchedulerOccEnhanced::ValidationLoop, this);
+  // DISABLED: Batch validation adds overhead without benefit due to coroutine architecture
+  // Coroutines prevent multiple transactions from arriving concurrently at validation queue
+  // Batches are always size 1, so workers are never utilized
+  // See doc/progress.md for detailed findings
+  //
+  // To re-enable when multi-threading is implemented (Phase 2):
+  // if (Config::GetConfig()->get_batch_validation_enabled()) {
+  //   batch_size_ = Config::GetConfig()->get_batch_size();
+  //   batch_timeout_ = std::chrono::microseconds(Config::GetConfig()->get_batch_timeout_us());
+  //   batch_validator_ = std::make_unique<BatchValidator>(batch_size_, Config::GetConfig()->get_num_workers());
+  //   running_ = true;
+  //   validation_thread_ = std::thread(&SchedulerOccEnhanced::ValidationLoop, this);
+  // }
+  Log_info("SchedulerOccEnhanced: Using inline validation (batch validation disabled - requires Phase 2 threading)");
 
   // Register signal handler to print metrics on SIGTERM/SIGINT
   signal(SIGTERM, sigterm_handler_enhanced);
   signal(SIGINT, sigterm_handler_enhanced);
 
-  Log_info("SchedulerOccEnhanced: initialized (inline validation + early abort)");
+  Log_info("SchedulerOccEnhanced: initialized");
 }
 
 SchedulerOccEnhanced::~SchedulerOccEnhanced() {
   // Clear global pointer
   g_scheduler_enhanced = nullptr;
 
-  // No background thread to stop (batch validation removed)
+  // Stop validation thread if running
+  if (running_) {
+    running_ = false;
+    // Wake up the validation thread if it's waiting
+    validation_queue_.Clear();  // This should help unblock DequeueBatch
+    if (validation_thread_.joinable()) {
+      validation_thread_.join();
+    }
+  }
 
   // Export results to CSV before logging
   ExportResultsToCSV();
@@ -144,13 +163,6 @@ bool SchedulerOccEnhanced::DoPrepare(txnid_t tx_id) {
     return false;
   }
 
-  // Direct inline validation - no queue, no promises, no background thread
-  // This is simpler and faster than batch validation for short transactions
-  auto txn = (mdb::TxnOCC*) get_mdb_txn(tx_id);
-  verify(txn != nullptr);
-  verify(txn->outcome_ == symbol_t::NONE);
-  verify(!txn->verified_);
-
   // AGGRESSIVE EARLY ABORT CHECK #2: Final check before validation
   // This catches conflicts that happened while transaction was executing
   // but before it reached validation (since transactions are very fast - 0.2ms)
@@ -164,62 +176,91 @@ bool SchedulerOccEnhanced::DoPrepare(txnid_t tx_id) {
     }
   }
 
-  // Version check (only on leader)
-  if (tx_box->is_leader_hint_ && !txn->version_check()) {
-    tx_box->SetExecutionEndTime();
-    Log_debug("DoPrepare: tx %" PRIx64 " version check failed", tx_id);
-    txn->__debug_abort_ = 1;
-    RecordAbort(AbortReason::VERSION_MISMATCH);
-    return false;
-  }
+  // Use batch validator if enabled, otherwise inline validation
+  if (batch_validator_ && running_) {
+    // Create promise for waiting on validation result
+    auto promise = std::make_shared<std::promise<bool>>();
+    auto future = promise->get_future();
 
-  // Acquire read locks
-  for (auto &it : txn->ver_check_read_) {
-    Row *row = it.first.row;
-    auto *v_row = (VersionedRow *) row;
-    if (!v_row->rlock_row_by(txn->id())) {
-      // Lock acquisition failed - unlock everything and abort
-      for (auto &lit : txn->locks_) {
-        Row* r = lit.first;
-        auto vr = (VersionedRow *) r;
-        vr->unlock_row_by(txn->id());
-      }
-      txn->locks_.clear();
+    // Set up batch metadata with promise
+    tx_box->GetBatchMetadata().validation_promise = promise;
+    tx_box->GetBatchMetadata().enqueue_time = std::chrono::steady_clock::now();
+
+    // Enqueue transaction for batch validation
+    validation_queue_.Enqueue(tx_box.get());
+
+    // Wait for validation result from background thread
+    bool passed = future.get();
+
+    if (!passed) {
       tx_box->SetExecutionEndTime();
-      Log_debug("DoPrepare: tx %" PRIx64 " read lock failed", tx_id);
-      txn->__debug_abort_ = 1;
-      RecordAbort(AbortReason::LOCK_CONFLICT);
+      RecordAbort(AbortReason::VERSION_MISMATCH);  // Could be version or lock conflict
       return false;
     }
-    insert_into_map(txn->locks_, row, -1);
-  }
+  } else {
+    // Direct inline validation - no queue, no promises, no background thread
+    // This is simpler and faster than batch validation for short transactions
+    auto txn = (mdb::TxnOCC*) get_mdb_txn(tx_id);
+    verify(txn != nullptr);
+    verify(txn->outcome_ == symbol_t::NONE);
+    verify(!txn->verified_);
 
-  // Acquire write locks
-  for (auto &it : txn->updates_) {
-    Row *row = it.first;
-    auto *v_row = (VersionedRow *) row;
-    if (!v_row->wlock_row_by(txn->id())) {
-      // Lock acquisition failed - unlock everything and abort
-      for (auto &lit : txn->locks_) {
-        Row* r = lit.first;
-        auto vr = (VersionedRow *) r;
-        vr->unlock_row_by(txn->id());
-      }
-      txn->locks_.clear();
+    // Version check (only on leader)
+    if (tx_box->is_leader_hint_ && !txn->version_check()) {
       tx_box->SetExecutionEndTime();
-      Log_debug("DoPrepare: tx %" PRIx64 " write lock failed", tx_id);
+      Log_debug("DoPrepare: tx %" PRIx64 " version check failed", tx_id);
       txn->__debug_abort_ = 1;
-      RecordAbort(AbortReason::LOCK_CONFLICT);
+      RecordAbort(AbortReason::VERSION_MISMATCH);
       return false;
     }
-    insert_into_map(txn->locks_, row, -1);
+
+    // Acquire read locks
+    for (auto &it : txn->ver_check_read_) {
+      Row *row = it.first.row;
+      auto *v_row = (VersionedRow *) row;
+      if (!v_row->rlock_row_by(txn->id())) {
+        // Lock acquisition failed - unlock everything and abort
+        for (auto &lit : txn->locks_) {
+          Row* r = lit.first;
+          auto vr = (VersionedRow *) r;
+          vr->unlock_row_by(txn->id());
+        }
+        txn->locks_.clear();
+        tx_box->SetExecutionEndTime();
+        Log_debug("DoPrepare: tx %" PRIx64 " read lock failed", tx_id);
+        txn->__debug_abort_ = 1;
+        RecordAbort(AbortReason::LOCK_CONFLICT);
+        return false;
+      }
+      insert_into_map(txn->locks_, row, -1);
+    }
+
+    // Acquire write locks
+    for (auto &it : txn->updates_) {
+      Row *row = it.first;
+      auto *v_row = (VersionedRow *) row;
+      if (!v_row->wlock_row_by(txn->id())) {
+        // Lock acquisition failed - unlock everything and abort
+        for (auto &lit : txn->locks_) {
+          Row* r = lit.first;
+          auto vr = (VersionedRow *) r;
+          vr->unlock_row_by(txn->id());
+        }
+        txn->locks_.clear();
+        tx_box->SetExecutionEndTime();
+        Log_debug("DoPrepare: tx %" PRIx64 " write lock failed", tx_id);
+        txn->__debug_abort_ = 1;
+        RecordAbort(AbortReason::LOCK_CONFLICT);
+        return false;
+      }
+      insert_into_map(txn->locks_, row, -1);
+    }
+
+    // Validation passed!
+    txn->__debug_abort_ = 0;
+    txn->verified_ = true;
+    Log_debug("DoPrepare: tx %" PRIx64 " validation PASSED (inline)", tx_id);
   }
-
-  // Validation passed!
-  txn->__debug_abort_ = 0;
-  txn->verified_ = true;
-
-  Log_debug("DoPrepare: tx %" PRIx64 " validation PASSED (inline)", tx_id);
 
   // Don't set end time yet - will be set in DoCommit
   return true;
@@ -385,6 +426,31 @@ void SchedulerOccEnhanced::ExportResultsToCSV() {
 
   fclose(fp);
   Log_info("Results exported to %s", filename);
+}
+
+void SchedulerOccEnhanced::ValidationLoop() {
+  Log_info("ValidationLoop: started (batch_size=%zu, timeout=%lld us)",
+           batch_size_, batch_timeout_.count());
+
+  while (running_) {
+    // Dequeue a batch of transactions (blocks until batch ready or timeout)
+    auto batch = validation_queue_.DequeueBatch(batch_size_, batch_timeout_);
+
+    if (batch.empty()) {
+      // Timeout with no transactions - check if we should stop
+      continue;
+    }
+
+    Log_info("ValidationLoop: processing batch of %zu transactions", batch.size());
+
+    // Validate the batch using BatchValidator
+    auto result = batch_validator_->ValidateBatch(batch);
+
+    // Results are already delivered via promises in BatchValidator
+    // (see BatchValidator::ValidateBatchSerial/Parallel which sets validation_promise)
+  }
+
+  Log_info("ValidationLoop: stopped");
 }
 
 } // namespace janus

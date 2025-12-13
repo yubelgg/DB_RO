@@ -467,38 +467,89 @@ Start with the file structure and skeleton classes, then build up functionality 
 
 ---
 
-## Implementation Status (Updated 2025-11-29)
+## Implementation Status (Updated 2025-12-12)
 
-### ✅ COMPLETE: All 4 Implementation Steps
+### ✅ COMPLETE: All 4 Implementation Steps (Code Complete)
 
 **Step 1: Set Up Structure** ✅
-
-- All skeleton classes created and registered
-- Framework integration verified
-- Builds successfully
-
 **Step 2: Basic Batching** ✅
-
-- ValidationQueue implemented with timeout/size-based batching
-- BatchValidator with serial validation
-- Background validation thread working
-- Promise/Future synchronization
-
 **Step 3: Parallel Validation** ✅
-
-- ConflictGraph with dependency analysis
-- Worker thread pool for parallel validation
-- Graph coloring for independent set partitioning
-- Supporting structures (BloomFilter, ConcurrentMap)
-
 **Step 4: Early Abort Detection** ✅
 
-- EarlyAbortDetector tracking active reads/writes
-- Integration with TxOccEnhanced read/write hooks
-- Version change notifications
-- Periodic abort checking
+**Build Status**: ✅ SUCCESS - All code compiles
 
-**Build Status**: ✅ SUCCESS - All code compiles, txlog library ready
+---
+
+## 🚨 CRITICAL DISCOVERY: Architecture Mismatch
+
+### The Problem
+
+Both optimizations were designed for **multi-threaded** systems, but this codebase uses **coroutines**.
+
+| Feature | With Coroutines | With Multi-threading |
+|---------|-----------------|---------------------|
+| **Parallel Validation** | ❌ Batches always size 1 | ✅ True concurrent arrivals |
+| **Early Abort** | ❌ Cascade aborts | ✅ Detects real conflicts |
+
+### Root Cause
+
+1. **Coroutine `future.get()` blocks** - Only 1 transaction in validation queue at a time
+2. **Coroutine yields create artificial conflicts** - All concurrent TXs interleave on single thread
+3. **One commit aborts all others** - When TX1 commits, ALL reading same keys abort
+
+### Solution: Revised Phased Approach
+
+See **Revised Implementation Plan** section below.
+
+---
+
+## Revised Implementation Plan (Dec 2025)
+
+### Phase 1: Thread-Safety Foundation ✅ COMPLETE
+
+Make row operations thread-safe for future multi-threading:
+
+| Component | Status | Change |
+|-----------|--------|--------|
+| `RWLock` | ✅ Done | Added `std::mutex` protection |
+| `VersionedRow::ver_` | ✅ Done | Changed to `std::atomic<version_t>` |
+| Parallel Validation Code | ✅ Done | Verified working (limited by coroutines) |
+| Early Abort Code | ✅ Done | Verified working (cascade aborts) |
+
+**Test Result:** 2,725 TPS (vs baseline 2,831) - minimal mutex overhead
+
+### Phase 2: Execution Threading 🔄 NEXT
+
+Replace coroutine-based execution with thread pool:
+
+| Task | Files | Description |
+|------|-------|-------------|
+| Thread pool for TX execution | `server_worker.cc` | Replace coroutine dispatch |
+| Remove blocking yields | `rrr/coroutine/` | Bypass `Coroutine::Sleep()` |
+| Re-enable batch validation | `scheduler_enhanced.cc` | Uncomment batch validator |
+
+**Expected Benefit:** 15-30% throughput improvement
+
+### Phase 3: Optimization & Benchmarking
+
+1. Tune batch parameters (size, timeout, threshold)
+2. Run comprehensive benchmarks
+3. Compare with baseline OCC
+4. Document findings
+
+---
+
+## Current Configuration (Until Phase 2)
+
+```yaml
+batch_validation:
+  enabled: false  # Disabled - adds overhead without benefit
+
+early_abort:
+  enabled: true   # Enabled but limited by coroutines
+```
+
+**Rationale:** Batch validation adds promise/future overhead but batches are always size 1 due to coroutine blocking. Early abort is enabled but causes cascade aborts.
 
 ---
 
@@ -614,31 +665,49 @@ Features worth considering for integration:
 
 This plan provided a clear path to implementing enhanced OCC with:
 
-- ✅ **Parallel batch validation** for throughput improvement
-- ✅ **Early abort detection** for reduced wasted work
+- ✅ **Parallel batch validation** code complete (needs threading to work)
+- ✅ **Early abort detection** code complete (needs threading to work)
 - ✅ **~20 new files** organized logically
-- ✅ **Phased implementation** completed successfully
-- ✅ **Integration** with existing Janus framework
-- 📊 **Clear next steps** for testing and evaluation
+- ✅ **Thread-safety foundation** complete (Phase 1)
+- 🚨 **Critical discovery**: Coroutine architecture incompatible
+- 🔄 **Revised approach**: Phase 2 execution threading required
 
-**Status**: Implementation complete, moving to testing phase.
+**Status**: Phase 1 complete, Phase 2 (execution threading) is next priority.
 
 ---
 
-## Current Focus: Testing & Evaluation Phase (2 Weeks)
+## Current Focus: Phase 2 Execution Threading
 
-Now that implementation is complete, the team is focusing on:
+### Why Threading is Required
 
-**Week 1 (Nov 30 - Dec 6)**: Testing & Infrastructure
+Both optimizations need true parallel execution:
 
-- Person 1: Unit tests for all components
-- Person 2: Integration tests and config files
-- Person 3: Benchmarking infrastructure and baseline
+| Without Threading | With Threading |
+|-------------------|----------------|
+| Batches size 1 | Batches size N |
+| Cascade aborts | Real conflict detection |
+| Workers idle | Workers utilized |
+| No improvement | 15-30% improvement |
 
-**Week 2 (Dec 7-13)**: Optimization & Documentation
+### Phase 2 Tasks
 
-- Person 1: Parameter tuning
-- Person 2: Full benchmark suite
-- Person 3: Evaluation report and documentation
+1. **Analyze coroutine usage** in `server_worker.cc`
+2. **Design thread pool** for transaction execution
+3. **Replace or bypass** `Coroutine::Sleep()` yields
+4. **Re-enable batch validation** once threading works
+5. **Benchmark and optimize**
 
-See TEAM_WORK.md for detailed task breakdown.
+### Key Files for Phase 2
+
+- `src/deptran/server_worker.cc` - Transaction dispatch
+- `src/rrr/coroutine/` - Coroutine implementation
+- `src/deptran/occ/scheduler_enhanced.cc` - Re-enable batch validator
+
+### Success Criteria
+
+- [ ] Transactions run on separate threads
+- [ ] Batch sizes > 1 in logs
+- [ ] Early abort reduces abort rate
+- [ ] >15% throughput improvement
+
+See `doc/threading.md` for detailed Phase 2 plan.

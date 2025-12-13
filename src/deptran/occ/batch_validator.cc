@@ -57,13 +57,17 @@ BatchValidator::ValidateBatch(const std::vector<TxOccEnhanced *> &batch) {
 
   // Decide validation strategy based on batch size
   size_t parallel_threshold = static_cast<size_t>(Config::GetConfig()->get_parallel_threshold());
-  
+
   if (batch.size() >= parallel_threshold && num_workers_ > 0) {
     // Large batch: use parallel validation with conflict graph
+    Log_info("PARALLEL: batch=%zu >= threshold=%zu, using %d workers",
+             batch.size(), parallel_threshold, num_workers_);
     ValidateBatchParallel(batch, result);
   } else {
     // For now, use serial validation for all batch sizes
     // Smart ordering can be enabled later when performance is verified
+    Log_info("SERIAL: batch=%zu < threshold=%zu (workers=%d)",
+             batch.size(), parallel_threshold, num_workers_);
     ValidateBatchSerial(batch, result);
   }
 
@@ -333,8 +337,9 @@ void BatchValidator::WorkerThread(int worker_id) {
     }
     
     // Perform validation
+    Log_info("Worker %d: validating tx %" PRIx64, worker_id, work.tx->tid_);
     bool result = ValidateSingle(work.tx);
-    
+
     // Set result
     work.result.set_value(result);
   }
