@@ -36,6 +36,27 @@ void RWChopper::R_txn_init(TxRequest &req) {
   n_pieces_all_ = 1;
 }
 
+void RWChopper::Multi_RW_txn_init(TxRequest &req) {
+  int num_ops = Config::GetConfig()->get_ops_per_txn();
+
+  // Set up keys for all operations (keys_ is a set<int>)
+  std::set<int32_t> keys;
+  for (int i = 0; i < num_ops; i++) {
+    keys.insert(i);
+  }
+  GetWorkspace(RW_BENCHMARK_MULTI_RW_TXN_0).keys_ = keys;
+  n_pieces_dispatchable_ = 1;
+
+  output_size_ = {{0, num_ops}};
+  p_types_ = {{RW_BENCHMARK_MULTI_RW_TXN_0, RW_BENCHMARK_MULTI_RW_TXN_0}};
+
+  // Shard by first key (all ops go to same shard)
+  sss_->GetPartition(RW_BENCHMARK_TABLE, req.input_[0],
+                     sharding_[RW_BENCHMARK_MULTI_RW_TXN_0]);
+  status_ = {{RW_BENCHMARK_MULTI_RW_TXN_0, DISPATCHABLE}};
+  n_pieces_all_ = 1;
+}
+
 RWChopper::RWChopper() {
 }
 
@@ -54,6 +75,9 @@ void RWChopper::Init(TxRequest &req) {
     case RW_BENCHMARK_R_TXN:
       R_txn_init(req);
       break;
+    case RW_BENCHMARK_MULTI_RW_TXN:
+      Multi_RW_txn_init(req);
+      break;
     default:
       verify(0);
   }
@@ -70,6 +94,8 @@ bool RWChopper::IsReadOnly() {
     return false;
   else if (type_ == RW_BENCHMARK_R_TXN)
     return true;
+  else if (type_ == RW_BENCHMARK_MULTI_RW_TXN)
+    return false;  // Multi-op does both reads and writes
   else
     verify(0);
 }

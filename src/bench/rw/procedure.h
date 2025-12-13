@@ -11,6 +11,7 @@ class RWChopper : public TxData {
 private:
     void W_txn_init(TxRequest &req);
     void R_txn_init(TxRequest &req);
+    void Multi_RW_txn_init(TxRequest &req);
 
 public:
     RWChopper();

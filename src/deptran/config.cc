@@ -646,6 +646,12 @@ void Config::LoadBenchYML(YAML::Node config) {
     txn_weights_[txn_name] = weight;
   }
 
+  // Multi-operation transaction configuration
+  if (config["ops_per_txn"]) {
+    ops_per_txn_ = config["ops_per_txn"].as<int32_t>(1);
+    Log_info("Config: ops_per_txn = %d", ops_per_txn_);
+  }
+
   txn_weight_.push_back(txn_weights_["new_order"]);
   txn_weight_.push_back(txn_weights_["payment"]);
   txn_weight_.push_back(txn_weights_["order_status"]);

@@ -5,6 +5,8 @@
 #include "scheduler.h"
 #include "frame.h"
 #include "communicator.h"
+#include "occ/scheduler.h"
+#include "occ/scheduler_enhanced.h"
 #include "../kv/server.h"
 #include "../kv/service.h"
 #include "../shardkv/server.h"
@@ -285,6 +287,16 @@ void ServerWorker::WaitForShutdown() {
       this->tx_sched_->CheckDeltas();
     }
 #endif
+
+  // Export results to CSV before shutdown (scheduler destructor not called due to raw pointer)
+  if (tx_sched_) {
+    // Try enhanced OCC first, then baseline OCC
+    if (auto* enhanced = dynamic_cast<SchedulerOccEnhanced*>(tx_sched_)) {
+      enhanced->ExportResultsToCSV();
+    } else if (auto* baseline = dynamic_cast<SchedulerOcc*>(tx_sched_)) {
+      baseline->ExportResultsToCSV();
+    }
+  }
 
   Log_debug("exit %s", __FUNCTION__);
 }

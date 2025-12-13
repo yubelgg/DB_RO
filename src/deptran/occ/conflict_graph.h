@@ -39,13 +39,9 @@ public:
    */
   std::vector<std::vector<size_t>> FindIndependentSets();
 
-  /**
-   * Get a safe commit order using topological sort
-   * Ensures transactions commit in dependency order
-   * 
-   * Returns: Vector of transaction indices in commit order
-   */
-  std::vector<size_t> TopologicalSort();
+  // NOTE: TopologicalSort() removed - was dead code with algorithm bug
+  // (topological sort only works on directed acyclic graphs, but ConflictGraph
+  // is undirected). Use FindIndependentSets() or GetLowConflictOrder() instead.
 
   /**
    * Check if two transaction indices conflict
@@ -128,12 +124,7 @@ private:
    */
   std::vector<std::vector<size_t>> GreedyColoring();
 
-  /**
-   * DFS helper for topological sort
-   */
-  void TopologicalSortDFS(size_t node, 
-                          std::unordered_set<size_t>& visited,
-                          std::vector<size_t>& stack);
+  // NOTE: TopologicalSortDFS() removed - was part of dead TopologicalSort() code
 };
 
 } // namespace janus

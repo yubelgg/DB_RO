@@ -11,7 +11,7 @@ TxOccEnhanced::TxOccEnhanced(epoch_t epoch, txnid_t tid, TxLogServer* mgr)
     : TxOcc(epoch, tid, mgr),
       early_abort_detector_(nullptr),
       operation_count_(0),
-      check_interval_(Config::GetConfig()->get_check_interval()),
+      check_interval_(std::max(1, Config::GetConfig()->get_check_interval())),  // Minimum 1 for frequent checks
       early_aborted_(false) {
   
   // Try to get early abort detector from scheduler
@@ -25,10 +25,10 @@ TxOccEnhanced::TxOccEnhanced(epoch_t epoch, txnid_t tid, TxLogServer* mgr)
 }
 
 TxOccEnhanced::~TxOccEnhanced() {
-  // Clean up tracking in early abort detector
-  if (early_abort_detector_ && early_abort_detector_->IsEnabled()) {
-    early_abort_detector_->RemoveTransaction(tid_);
-  }
+  // DON'T remove from early abort detector here
+  // Tracking data will be cleaned up by periodic GC or stay until overwritten
+  // This allows longer conflict detection window for other concurrent transactions
+  // Previous code removed immediately, narrowing the detection window
 }
 
 bool TxOccEnhanced::ReadColumn(mdb::Row *row, mdb::colid_t col_id, Value *value,
@@ -109,18 +109,15 @@ bool TxOccEnhanced::WriteColumn(Row *row, colid_t col_id, const Value &value,
   bool success = TxOcc::WriteColumn(row, col_id, value, hint_flag);
   
   if (success && early_abort_detector_ && early_abort_detector_->IsEnabled()) {
-    // Register this write with the detector
-    early_abort_detector_->RegisterWrite(tid_, row, col_id);
-    
-    Log_debug("Registered write: tx=%" PRIx64 " row=%p col=%d",
-              tid_, row, col_id);
-    
+    // NOTE: Write registration removed - was dead code (never used for conflict detection)
+    // Write-write conflicts are handled by OCC lock acquisition during validation
+
     // Check for early abort periodically
     if (IncrementAndCheckAbort()) {
       return false;
     }
   }
-  
+
   return success;
 }
 
@@ -137,20 +134,15 @@ bool TxOccEnhanced::WriteColumns(Row *row, const std::vector<colid_t> &col_ids,
   bool success = TxOcc::WriteColumns(row, col_ids, values, hint_flag);
   
   if (success && early_abort_detector_ && early_abort_detector_->IsEnabled()) {
-    // Register all writes with detector
-    for (const auto& col_id : col_ids) {
-      early_abort_detector_->RegisterWrite(tid_, row, col_id);
-    }
-    
-    Log_debug("Registered %zu writes: tx=%" PRIx64 " row=%p",
-              col_ids.size(), tid_, row);
-    
+    // NOTE: Write registration removed - was dead code (never used for conflict detection)
+    // Write-write conflicts are handled by OCC lock acquisition during validation
+
     // Check for early abort after batch
     if (IncrementAndCheckAbort()) {
       return false;
     }
   }
-  
+
   return success;
 }
 

@@ -48,6 +48,43 @@ void RwWorkload::RegisterPrecedures() {
          return;
        }
   );
+
+  // Multi-operation read-modify-write transaction
+  // Each operation: read, increment, write on a different key
+  RegP(RW_BENCHMARK_MULTI_RW_TXN, RW_BENCHMARK_MULTI_RW_TXN_0,
+       {}, // i
+       {}, // o
+       {}, // c
+       {TPCC_TB_HISTORY, {TPCC_VAR_H_KEY}}, // s
+       DF_REAL,
+       PROC {
+         int num_ops = Config::GetConfig()->get_ops_per_txn();
+         auto tbl = tx.GetTable(RW_BENCHMARK_TABLE);
+
+         for (int i = 0; i < num_ops && i < (int)cmd.input.size(); i++) {
+           mdb::MultiBlob key_buf(1);
+           key_buf[0] = cmd.input[i].get_blob();
+
+           auto row = tx.Query(tbl, key_buf);
+           if (row == nullptr) {
+             Log_warn("MULTI_RW: row not found for key %d", i);
+             *res = REJECT;
+             return;
+           }
+
+           // Read current value
+           Value val;
+           tx.ReadColumn(row, 1, &val, TXN_BYPASS);
+
+           // Modify and write back
+           val.set_i32(val.get_i32() + 1);
+           tx.WriteColumn(row, 1, val, TXN_DEFERRED);
+         }
+
+         *res = SUCCESS;
+         return;
+       }
+  );
 }
 
 RwWorkload::RwWorkload(Config *config) : Workload(config) {
@@ -55,6 +92,16 @@ RwWorkload::RwWorkload(Config *config) : Workload(config) {
 
 void RwWorkload::GetTxRequest(TxRequest* req, uint32_t cid) {
   req->n_try_ = n_try_;
+
+  // Check if multi_rw is configured (weight > 0)
+  double multi_rw_weight = txn_weights_["multi_rw"];
+  if (multi_rw_weight > 0.0) {
+    // Multi-op mode: always use multi_rw transactions
+    GenerateMultiRWRequest(req, cid);
+    return;
+  }
+
+  // Single-op mode: use read/write based on weights
   std::vector<double> weights = {txn_weights_["read"], txn_weights_["write"]};
   switch (RandomGenerator::weighted_select(weights)) {
     case 0: // read
@@ -85,6 +132,17 @@ void RwWorkload::GenerateReadRequest(
   req->input_ = {
       {0, Value((i32) id)}
   };
+}
+
+void RwWorkload::GenerateMultiRWRequest(TxRequest *req, uint32_t cid) {
+  req->tx_type_ = RW_BENCHMARK_MULTI_RW_TXN;
+  int num_ops = Config::GetConfig()->get_ops_per_txn();
+
+  // Generate random key for each operation
+  for (int i = 0; i < num_ops; i++) {
+    auto id = RandomGenerator::rand(0, rw_benchmark_para_.n_table_ - 1);
+    req->input_[i] = Value((i32)id);
+  }
 }
 
 int32_t RwWorkload::GetId(uint32_t cid) {

@@ -170,6 +170,13 @@ public:
     start_time_ = std::chrono::steady_clock::now();
   }
 
+  /**
+   * Export results to timestamped CSV file with early abort stats
+   * File format: results_YYYYMMDD_HHMMSS.csv
+   * Includes additional columns: early_aborts, version_changes, reads_tracked
+   */
+  virtual void ExportResultsToCSV() override;
+
 private:
   /**
    * Background thread that processes validation batches
@@ -194,25 +201,13 @@ private:
   size_t batch_size_;                       // Max transactions per batch
   std::chrono::microseconds batch_timeout_; // Max wait time for batch
 
-  // Metrics - Global transaction counters
-  std::atomic<uint64_t> num_transactions_attempted_{0};
-  std::atomic<uint64_t> num_transactions_committed_{0};
-  std::atomic<uint64_t> num_transactions_aborted_{0};
+  // NOTE: Transaction counters and RecordAbort() are inherited from SchedulerOcc
+  // Do NOT redeclare them here (shadowing causes bugs!)
+  // Inherited: num_transactions_attempted_, num_transactions_committed_,
+  //            num_transactions_aborted_, aborts_by_reason_, RecordAbort()
 
-  // Abort reason tracking
-  mutable std::map<AbortReason, std::atomic<uint64_t>> aborts_by_reason_;
-
-  // Timing for throughput calculation
+  // Timing for throughput calculation (separate from parent's start_time_)
   std::chrono::steady_clock::time_point start_time_;
-
-  /**
-   * Record an abort with categorization
-   * @param reason The reason for the abort
-   */
-  void RecordAbort(AbortReason reason) {
-    num_transactions_aborted_++;
-    aborts_by_reason_[reason]++;
-  }
 };
 
 } // namespace janus

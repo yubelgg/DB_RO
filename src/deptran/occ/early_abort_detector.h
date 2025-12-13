@@ -4,6 +4,8 @@
 #include <unordered_set>
 #include <mutex>
 #include <atomic>
+#include <thread>
+#include <chrono>
 #include "../memdb/row.h"
 #include "base/all.hpp"
 
@@ -35,14 +37,17 @@ struct RowColumnKeyHash {
 };
 
 /**
- * ReadRecord - Tracks a specific read operation
+ * ReadRecord - Tracks a specific read operation with timestamp for GC
  */
 struct ReadRecord {
   i64 tx_id;
   i64 version;  // Version number that was read
-  
-  ReadRecord(i64 tid, i64 ver) : tx_id(tid), version(ver) {}
-  
+  std::chrono::steady_clock::time_point timestamp;  // For GC expiration
+
+  ReadRecord(i64 tid, i64 ver)
+    : tx_id(tid), version(ver), timestamp(std::chrono::steady_clock::now()) {}
+
+  // Comparison ignores timestamp (for duplicate detection)
   bool operator==(const ReadRecord& other) const {
     return tx_id == other.tx_id && version == other.version;
   }
@@ -77,11 +82,8 @@ public:
    */
   void RegisterRead(i64 tx_id, Row* row, mdb::colid_t column_id, i64 version);
   
-  /**
-   * Register a write operation
-   * Called during transaction execution when writing a column
-   */
-  void RegisterWrite(i64 tx_id, Row* row, mdb::colid_t column_id);
+  // NOTE: Write tracking removed - was dead code (never used for conflict detection)
+  // Write-write conflicts are handled by OCC lock acquisition during validation
   
   /**
    * Notify detector that a column's version has changed
@@ -137,13 +139,11 @@ private:
   std::unordered_map<RowColumnKey, std::unordered_set<ReadRecord, ReadRecordHash>, RowColumnKeyHash> active_reads_;
   std::mutex reads_mutex_;
   
-  // Thread-safe tracking of active writes
-  // Key: (row, column) -> Set of tx_ids
-  std::unordered_map<RowColumnKey, std::unordered_set<i64>, RowColumnKeyHash> active_writes_;
-  std::mutex writes_mutex_;
+  // NOTE: active_writes_ removed - was never used for conflict detection
   
-  // Thread-safe set of transactions marked for abort
-  std::unordered_set<i64> aborted_txs_;
+  // Thread-safe map of transactions marked for abort with timestamps
+  // Key: tx_id, Value: timestamp when abort was marked (for TTL-based GC)
+  std::unordered_map<i64, std::chrono::steady_clock::time_point> aborted_txs_;
   std::mutex abort_mutex_;
   
   // Statistics
@@ -151,21 +151,35 @@ private:
   
   // Enable/disable flag
   std::atomic<bool> enabled_;
-  
+
+  // Garbage collection thread and settings (Fix 5)
+  std::thread gc_thread_;
+  std::atomic<bool> gc_running_{false};
+  static constexpr std::chrono::milliseconds gc_interval_{100};  // Clean every 100ms
+  static constexpr std::chrono::milliseconds entry_ttl_{500};    // Entries expire after 500ms
+
+  /**
+   * Internal: GC background thread loop
+   */
+  void GarbageCollectionLoop();
+
+  /**
+   * Internal: Clean expired entries from tracking maps
+   */
+  void CleanExpiredEntries();
+
   /**
    * Internal: Find transactions reading a specific version and mark for abort
    */
   void DetectAndMarkConflicts(const RowColumnKey& key, i64 new_version);
-  
+
   /**
    * Internal: Remove read tracking for a specific transaction and key
    */
   void RemoveRead(i64 tx_id, const RowColumnKey& key);
-  
-  /**
-   * Internal: Remove write tracking for a specific transaction and key
-   */
-  void RemoveWrite(i64 tx_id, const RowColumnKey& key);
+
+  // NOTE: RemoveWrite removed - write tracking no longer exists
 };
+
 
 } // namespace janus

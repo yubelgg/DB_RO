@@ -9,11 +9,14 @@ extern char RW_BENCHMARK_TABLE[];
 
 #define RW_BENCHMARK_W_TXN  (100)
 #define RW_BENCHMARK_R_TXN  (200)
+#define RW_BENCHMARK_MULTI_RW_TXN  (300)  // Multi-operation read-modify-write
 #define RW_BENCHMARK_W_TXN_NAME  "WRITE"
 #define RW_BENCHMARK_R_TXN_NAME  "READ"
+#define RW_BENCHMARK_MULTI_RW_TXN_NAME  "MULTI_RW"
 
 #define RW_BENCHMARK_W_TXN_0 (101)
 #define RW_BENCHMARK_R_TXN_0 (201)
+#define RW_BENCHMARK_MULTI_RW_TXN_0 (301)  // Single piece with all ops
 
 class RwWorkload : public Workload {
  public:
@@ -26,6 +29,7 @@ class RwWorkload : public Workload {
   int32_t GetId(uint32_t cid);
   void GenerateWriteRequest(TxRequest *req, uint32_t cid);
   void GenerateReadRequest(TxRequest *req, uint32_t cid);
+  void GenerateMultiRWRequest(TxRequest *req, uint32_t cid);
 };
 
 } // namespace janus

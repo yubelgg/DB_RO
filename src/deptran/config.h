@@ -85,6 +85,9 @@ class Config {
   int32_t check_interval_ = 10;
   int32_t bloom_filter_size_ = 10000;
 
+  // Multi-operation transaction configuration
+  int32_t ops_per_txn_ = 1;  // Operations per transaction (1 = default single-op)
+
   // failover configuration
   bool failover_;
   bool failover_soft_;
@@ -322,6 +325,7 @@ class Config {
   bool get_early_abort_enabled() const { return early_abort_enabled_; }
   int32_t get_check_interval() const { return check_interval_; }
   int32_t get_bloom_filter_size() const { return bloom_filter_size_; }
+  int32_t get_ops_per_txn() const { return ops_per_txn_; }
 
   const char *log_path();
 

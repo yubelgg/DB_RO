@@ -220,43 +220,8 @@ std::vector<std::vector<size_t>> ConflictGraph::GreedyColoring() {
   return independent_sets;
 }
 
-std::vector<size_t> ConflictGraph::TopologicalSort() {
-  std::vector<size_t> result;
-  std::unordered_set<size_t> visited;
-  
-  // DFS from each unvisited node
-  for (size_t node = 0; node < num_nodes_; node++) {
-    if (visited.count(node) == 0) {
-      TopologicalSortDFS(node, visited, result);
-    }
-  }
-  
-  // Reverse to get correct topological order
-  std::reverse(result.begin(), result.end());
-  
-  Log_debug("TopologicalSort produced order of %zu nodes", result.size());
-  
-  return result;
-}
-
-void ConflictGraph::TopologicalSortDFS(size_t node,
-                                        std::unordered_set<size_t>& visited,
-                                        std::vector<size_t>& stack) {
-  visited.insert(node);
-  
-  // Visit all neighbors
-  auto it = adj_list_.find(node);
-  if (it != adj_list_.end()) {
-    for (size_t neighbor : it->second) {
-      if (visited.count(neighbor) == 0) {
-        TopologicalSortDFS(neighbor, visited, stack);
-      }
-    }
-  }
-  
-  // Push node to stack after visiting all neighbors
-  stack.push_back(node);
-}
+// NOTE: TopologicalSort() and TopologicalSortDFS() removed - dead code with algorithm bug
+// (topological sort only works on directed acyclic graphs, but ConflictGraph is undirected)
 
 void ConflictGraph::Clear() {
   num_nodes_ = 0;

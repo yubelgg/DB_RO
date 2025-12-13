@@ -4,6 +4,8 @@
 #include "command_marshaler.h"
 #include "benchmark_control_rpc.h"
 #include "client_worker.h"
+#include "config.h"
+#include <errno.h>
 
 
 extern vector<unique_ptr<janus::ClientWorker>> client_workers_g;
@@ -143,9 +145,23 @@ void ServerControlServiceImpl::set_ready() {
 
 void ServerControlServiceImpl::wait_for_shutdown() {
   Log_debug("%s", __FUNCTION__);
+
+  // Get configured duration + 5 second grace period for timeout
+  unsigned int duration = Config::GetConfig()->duration_;
+  unsigned int timeout_secs = duration + 5;
+
+  Log_info("wait_for_shutdown: Will auto-exit after %u seconds if no shutdown signal", timeout_secs);
+
   status_mutex_.lock();
-  while (SCS_STOP != status_)
-    status_cond_.wait(status_mutex_);
+  while (SCS_STOP != status_) {
+    // Use timed wait - returns ETIMEDOUT (110) if timeout expired
+    int ret = status_cond_.timed_wait(status_mutex_, (double)timeout_secs);
+    if (ret == ETIMEDOUT) {
+      Log_info("wait_for_shutdown: Timeout after %u seconds, forcing clean shutdown", timeout_secs);
+      status_ = SCS_STOP;  // Force stop
+      break;
+    }
+  }
   status_mutex_.unlock();
   Log_debug("exit %s", __FUNCTION__);
 }

@@ -6,6 +6,9 @@
 #include "../rcc_rpc.h"
 #include "base/all.hpp"
 #include <signal.h>
+#include <cstdio>
+#include <ctime>
+#include <unistd.h>
 
 namespace janus {
 
@@ -47,6 +50,9 @@ void sigterm_handler_enhanced(int signum) {
                stats.hot_key_accesses.load(),
                stats.unique_keys_tracked.load());
     }
+
+    // Export results to CSV (signal handler context - limited but should work for simple file I/O)
+    g_scheduler_enhanced->ExportResultsToCSV();
   }
   exit(0);
 }
@@ -57,11 +63,7 @@ SchedulerOccEnhanced::SchedulerOccEnhanced()
   // Set global pointer for early abort detector access from transactions
   g_scheduler_enhanced = this;
 
-  // Initialize abort reason counters
-  aborts_by_reason_[AbortReason::EARLY] = 0;
-  aborts_by_reason_[AbortReason::VERSION_MISMATCH] = 0;
-  aborts_by_reason_[AbortReason::LOCK_CONFLICT] = 0;
-  aborts_by_reason_[AbortReason::UNKNOWN] = 0;
+  // NOTE: Abort reason counters are initialized by parent SchedulerOcc constructor
 
   // Create early abort detector (if enabled in config)
   if (Config::GetConfig()->get_early_abort_enabled()) {
@@ -91,6 +93,9 @@ SchedulerOccEnhanced::~SchedulerOccEnhanced() {
   g_scheduler_enhanced = nullptr;
 
   // No background thread to stop (batch validation removed)
+
+  // Export results to CSV before logging
+  ExportResultsToCSV();
 
   // Log final statistics
   Log_info("SchedulerOccEnhanced: Transaction metrics:");
@@ -226,8 +231,7 @@ bool SchedulerOccEnhanced::DoPrepare(txnid_t tx_id) {
 // and faster for our workload.
 
 void SchedulerOccEnhanced::DoCommit(Tx &tx) {
-  // Increment committed counter
-  num_transactions_committed_++;
+  // NOTE: Commit counter moved to after parent DoCommit (Fix 7)
 
   // Mark execution end time for latency tracking
   auto* tx_enhanced = dynamic_cast<TxOccEnhanced*>(&tx);
@@ -247,10 +251,8 @@ void SchedulerOccEnhanced::DoCommit(Tx &tx) {
       auto* mdb_txn = dynamic_cast<mdb::TxnOCC*>(tx_enhanced->mdb_txn());
       if (mdb_txn) {
         // Collect all written columns BEFORE parent removes them
-        for (auto& it : mdb_txn->ver_check_write_) {
-          written_columns.push_back({it.first.row, it.first.col_id});
-        }
-        // Also collect from updates_ (which stores actual column IDs)
+        // NOTE: Only use updates_ (not ver_check_write_) to avoid duplicate notifications
+        // ver_check_write_ and updates_ can contain the same (row, col) pairs
         // updates_ is std::multimap<Row*, std::pair<colid_t, Value>>
         for (auto& it : mdb_txn->updates_) {
           Row* row = it.first;
@@ -269,6 +271,7 @@ void SchedulerOccEnhanced::DoCommit(Tx &tx) {
   }
 
   // Now call parent's DoCommit (this applies writes, increments versions, and removes mdb_txn)
+  // NOTE: Parent DoCommit already increments num_transactions_committed_, don't double-count!
   SchedulerOcc::DoCommit(tx);
 
   // After commit, notify early abort detector of version changes
@@ -324,6 +327,64 @@ bool SchedulerOccEnhanced::Dispatch(cmdid_t cmd_id,
   // Call parent SchedulerClassic::Dispatch with 4 parameters
   // This will eventually call our overridden DoPrepare() for validation
   return SchedulerClassic::Dispatch(cmd_id, dep_id, cmd, ret_output);
+}
+
+void SchedulerOccEnhanced::ExportResultsToCSV() {
+  // Generate timestamped filename
+  auto now = std::chrono::system_clock::now();
+  auto time_t_now = std::chrono::system_clock::to_time_t(now);
+  std::tm tm_now;
+  localtime_r(&time_t_now, &tm_now);
+
+  char filename[256];
+  snprintf(filename, sizeof(filename), "results_%04d%02d%02d_%02d%02d%02d.csv",
+           tm_now.tm_year + 1900, tm_now.tm_mon + 1, tm_now.tm_mday,
+           tm_now.tm_hour, tm_now.tm_min, tm_now.tm_sec);
+
+  // Check if file exists (append) or new (write header)
+  bool write_header = (access(filename, F_OK) == -1);
+
+  FILE* fp = fopen(filename, "a");
+  if (!fp) {
+    Log_warn("Failed to open CSV file: %s", filename);
+    return;
+  }
+
+  // Enhanced header with early abort stats
+  if (write_header) {
+    fprintf(fp, "timestamp,mode,duration,attempted,committed,aborted,abort_rate,tps,"
+                "early_aborts,version_changes,reads_tracked\n");
+  }
+
+  // Get metrics
+  uint64_t attempted = num_transactions_attempted_.load();
+  uint64_t committed = num_transactions_committed_.load();
+  uint64_t aborted = num_transactions_aborted_.load();
+  double abort_rate = attempted > 0 ? (double)aborted / attempted : 0.0;
+  uint32_t duration = Config::GetConfig()->duration_;
+  double tps = duration > 0 ? (double)committed / duration : 0.0;
+
+  // Get early abort detector stats
+  uint64_t early_aborts = 0;
+  uint64_t version_changes = 0;
+  uint64_t reads_tracked = 0;
+  if (early_abort_detector_) {
+    const auto& stats = early_abort_detector_->GetStats();
+    early_aborts = stats.early_aborts_detected.load();
+    version_changes = stats.version_changes_processed.load();
+    reads_tracked = stats.total_reads.load();
+  }
+
+  // Write ISO timestamp
+  char timestamp[64];
+  strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%S", &tm_now);
+
+  fprintf(fp, "%s,occ_enhanced,%u,%lu,%lu,%lu,%.4f,%.2f,%lu,%lu,%lu\n",
+          timestamp, duration, attempted, committed, aborted, abort_rate, tps,
+          early_aborts, version_changes, reads_tracked);
+
+  fclose(fp);
+  Log_info("Results exported to %s", filename);
 }
 
 } // namespace janus

@@ -101,6 +101,12 @@ class SchedulerOcc: public SchedulerClassic {
     start_time_ = std::chrono::steady_clock::now();
   }
 
+  /**
+   * Export results to timestamped CSV file
+   * File format: results_YYYYMMDD_HHMMSS.csv
+   */
+  virtual void ExportResultsToCSV();
+
  protected:
   // Metrics - Global transaction counters
   std::atomic<uint64_t> num_transactions_attempted_{0};

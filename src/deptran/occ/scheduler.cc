@@ -12,13 +12,16 @@
 #include "scheduler.h"
 #include "scheduler_enhanced.h"  // For AbortReason enum
 #include <signal.h>
+#include <cstdio>
+#include <ctime>
+#include <unistd.h>
 
 namespace janus {
 
 // Global pointer for signal handler (only one scheduler instance per process)
 static SchedulerOcc* g_scheduler_occ = nullptr;
 
-// Signal handler for SIGTERM/SIGINT - print metrics before exit
+// Signal handler for SIGTERM/SIGINT - print metrics and export CSV before exit
 void sigterm_handler_baseline(int signum) {
   if (g_scheduler_occ) {
     Log_info("SchedulerOcc (Baseline): Caught signal %d, printing metrics:", signum);
@@ -32,6 +35,9 @@ void sigterm_handler_baseline(int signum) {
     Log_info("  Version mismatch: %llu", g_scheduler_occ->GetAbortCount(AbortReason::VERSION_MISMATCH));
     Log_info("  Lock conflicts: %llu", g_scheduler_occ->GetAbortCount(AbortReason::LOCK_CONFLICT));
     Log_info("  Unknown: %llu", g_scheduler_occ->GetAbortCount(AbortReason::UNKNOWN));
+
+    // Export results to CSV (signal handler context - limited but should work for simple file I/O)
+    g_scheduler_occ->ExportResultsToCSV();
   }
   exit(0);
 }
@@ -56,6 +62,9 @@ SchedulerOcc::SchedulerOcc()
 SchedulerOcc::~SchedulerOcc() {
   // Clear global pointer
   g_scheduler_occ = nullptr;
+
+  // Export results to CSV before logging
+  ExportResultsToCSV();
 
   // Log final statistics
   Log_info("SchedulerOcc (Baseline): Transaction metrics:");
@@ -297,6 +306,50 @@ bool SchedulerOcc::Dispatch(cmdid_t cmd_id,
 
   // Call parent SchedulerClassic::Dispatch with 4 parameters
   return SchedulerClassic::Dispatch(cmd_id, dep_id, cmd, ret_output);
+}
+
+void SchedulerOcc::ExportResultsToCSV() {
+  // Generate timestamped filename
+  auto now = std::chrono::system_clock::now();
+  auto time_t_now = std::chrono::system_clock::to_time_t(now);
+  std::tm tm_now;
+  localtime_r(&time_t_now, &tm_now);
+
+  char filename[256];
+  snprintf(filename, sizeof(filename), "results_%04d%02d%02d_%02d%02d%02d.csv",
+           tm_now.tm_year + 1900, tm_now.tm_mon + 1, tm_now.tm_mday,
+           tm_now.tm_hour, tm_now.tm_min, tm_now.tm_sec);
+
+  // Check if file exists (append) or new (write header)
+  bool write_header = (access(filename, F_OK) == -1);
+
+  FILE* fp = fopen(filename, "a");
+  if (!fp) {
+    Log_warn("Failed to open CSV file: %s", filename);
+    return;
+  }
+
+  if (write_header) {
+    fprintf(fp, "timestamp,mode,duration,attempted,committed,aborted,abort_rate,tps\n");
+  }
+
+  // Get metrics
+  uint64_t attempted = num_transactions_attempted_.load();
+  uint64_t committed = num_transactions_committed_.load();
+  uint64_t aborted = num_transactions_aborted_.load();
+  double abort_rate = attempted > 0 ? (double)aborted / attempted : 0.0;
+  uint32_t duration = Config::GetConfig()->duration_;
+  double tps = duration > 0 ? (double)committed / duration : 0.0;
+
+  // Write ISO timestamp
+  char timestamp[64];
+  strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%S", &tm_now);
+
+  fprintf(fp, "%s,occ,%u,%lu,%lu,%lu,%.4f,%.2f\n",
+          timestamp, duration, attempted, committed, aborted, abort_rate, tps);
+
+  fclose(fp);
+  Log_info("Results exported to %s", filename);
 }
 
 } // namespace janus
