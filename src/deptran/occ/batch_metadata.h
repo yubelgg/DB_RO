@@ -1,8 +1,8 @@
 #pragma once
 
 #include "../tx.h"
+#include "rrr/reactor/event.h"
 #include <chrono>
-#include <future>
 #include <memory>
 #include <vector>
 
@@ -45,7 +45,9 @@ struct BatchMetadata {
   std::vector<txnid_t> blocks;     // Transactions blocked by this
 
   // Synchronization: DoPrepare waits for validation result
-  std::shared_ptr<std::promise<bool>> validation_promise;
+  // Uses BoxEvent instead of promise/future for coroutine-friendly async
+  // BoxEvent::Wait() yields the coroutine, BoxEvent::Set() wakes it up
+  std::shared_ptr<rrr::BoxEvent<bool>> validation_event;
 
   // Reset metadata for reuse
   void Reset() {
@@ -55,7 +57,7 @@ struct BatchMetadata {
     passed = false;
     depends_on.clear();
     blocks.clear();
-    validation_promise.reset();
+    validation_event.reset();
   }
 };
 

@@ -77,6 +77,8 @@ bool ValidationQueue::Empty() const {
 void ValidationQueue::Clear() {
   std::lock_guard<std::mutex> lock(mutex_);
   queue_.clear();
+  // Notify waiting threads so they can check shutdown condition
+  cv_.notify_all();
 }
 
 } // namespace janus

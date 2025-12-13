@@ -1,32 +1,59 @@
 # Enhanced OCC Configuration - Early Abort Detection Only
-# This config enables only early abort detection (no batch validation)
-# Useful for ablation testing to measure the impact of early abort detection alone
+# Batch validation DISABLED
 #
 # Usage: ./build/labtest -f config/occ_enhanced_early_abort_only.yml
-#        ./build/dbtest -f config/occ_enhanced_early_abort_only.yml
-#
-# Features:
-#   - Parallel batch validation: DISABLED (uses serial validation)
-#   - Early abort detection: ENABLED
+
+# Minimal topology: 1 server, 1 client, single process
+site:
+  server:
+    - ["s101:8100"]
+  client:
+    - ["c101"]
+
+process:
+  s101: localhost
+  c101: localhost
+
+host:
+  localhost: 127.0.0.1
 
 mode:
-  cc: occ_enhanced    # Enhanced OCC concurrency control
-  ab: none            # No atomic broadcast (single node)
+  cc: occ_enhanced
+  ab: none
   read_only: occ_enhanced
   batch: false
   retry: 20
   ongoing: 1
 
-# Batch Validation Configuration - DISABLED (serial validation)
+# Batch Validation Configuration - DISABLED
 batch_validation:
   enabled: false
-  batch_size: 1           # Single transaction at a time
-  batch_timeout_us: 0     # No batching timeout
-  num_workers: 0          # No worker threads
+  batch_size: 1
+  batch_timeout_us: 0
+  num_workers: 0
+  parallel_threshold: 1
 
-# Early Abort Detection Configuration
+# Early Abort Detection Configuration - ENABLED
 early_abort:
   enabled: true
-  check_interval: 10      # Check for abort every N operations
-  bloom_filter_size: 10000  # Size of bloom filter for conflict pre-filtering
+  check_interval: 10
+  bloom_filter_size: 10000
 
+# Workload: RW benchmark - SAME AS BASELINE
+bench:
+  workload: rw
+  scale: 1
+  weight:
+    read: 0.5
+    write: 0.5
+  population:
+    history: 1000
+
+schema:
+  - name: history
+    column:
+      - {name: h_key, type: integer, primary: true}
+      - {name: h_c_id, type: integer}
+
+sharding:
+  history: MOD

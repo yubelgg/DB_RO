@@ -1,32 +1,59 @@
 # Enhanced OCC Configuration - Batch Validation Only
-# This config enables only batch validation (no early abort detection)
-# Useful for ablation testing to measure the impact of batch validation alone
+# Early abort detection DISABLED
 #
 # Usage: ./build/labtest -f config/occ_enhanced_batch_only.yml
-#        ./build/dbtest -f config/occ_enhanced_batch_only.yml
-#
-# Features:
-#   - Parallel batch validation: ENABLED
-#   - Early abort detection: DISABLED
+
+# Minimal topology: 1 server, 1 client, single process
+site:
+  server:
+    - ["s101:8100"]
+  client:
+    - ["c101"]
+
+process:
+  s101: localhost
+  c101: localhost
+
+host:
+  localhost: 127.0.0.1
 
 mode:
-  cc: occ_enhanced    # Enhanced OCC concurrency control
-  ab: none            # No atomic broadcast (single node)
+  cc: occ_enhanced
+  ab: none
   read_only: occ_enhanced
   batch: false
   retry: 20
   ongoing: 1
 
-# Batch Validation Configuration
+# Batch Validation Configuration - ENABLED
 batch_validation:
   enabled: true
-  batch_size: 32          # Maximum transactions per batch
-  batch_timeout_us: 100   # Maximum wait time for batch (microseconds)
-  num_workers: 8          # Number of parallel validation worker threads
+  batch_size: 32
+  batch_timeout_us: 100
+  num_workers: 8
+  parallel_threshold: 4
 
 # Early Abort Detection Configuration - DISABLED
 early_abort:
   enabled: false
-  check_interval: 10      # Ignored when disabled
-  bloom_filter_size: 0    # No bloom filter needed
+  check_interval: 10
+  bloom_filter_size: 0
 
+# Workload: RW benchmark - SAME AS BASELINE
+bench:
+  workload: rw
+  scale: 1
+  weight:
+    read: 0.5
+    write: 0.5
+  population:
+    history: 1000
+
+schema:
+  - name: history
+    column:
+      - {name: h_key, type: integer, primary: true}
+      - {name: h_c_id, type: integer}
+
+sharding:
+  history: MOD

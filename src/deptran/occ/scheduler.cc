@@ -136,7 +136,7 @@ bool SchedulerOcc::DoPrepare(txnid_t tx_id) {
     for (auto &it : txn->ver_check_read_) {
       Row *row = it.first.row;
       auto *v_row = (VersionedRow *) row;
-      Log_debug("r_lock row: %llx", row);
+      // Log_debug removed - per-row logging causes overhead
       if (!v_row->rlock_row_by(txn->id())) {
 #ifdef CONFLICT_COUNT
         const Table *tbl = v_row->get_table();

@@ -249,18 +249,26 @@ rusty::Arc<PollThreadWorker> PollThreadWorker::create() {
 
 // Explicit shutdown method
 void PollThreadWorker::shutdown() const {
-  // Remove pollables before stopping
-  for (auto& pair : fd_to_pollable_) {
-    this->remove(*pair.second);
+  // Signal thread to stop FIRST (before touching pollables)
+  // This prevents race conditions during global destructor phase
+  if (stop_flag_) {
+    stop_flag_->store(true);
   }
 
-  // Signal thread to stop
-  stop_flag_->store(true);
-
-  // Join thread
+  // Join thread before cleaning up pollables
+  // This ensures the poll thread isn't accessing fd_to_pollable_ while we modify it
   if (join_handle_.is_some()) {
     join_handle_.take().unwrap().join();
   }
+
+  // Now safe to clear pollables (thread is stopped)
+  // Use l_ lock to safely clear the map
+  // Skip calling remove() on each pollable to avoid virtual function calls
+  // on potentially corrupted objects during global destructor phase
+  l_->lock();
+  fd_to_pollable_.clear();
+  mode_.clear();
+  l_->unlock();
 }
 
 // Destructor just warns if not shut down

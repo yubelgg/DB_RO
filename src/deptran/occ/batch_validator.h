@@ -63,6 +63,18 @@ public:
    */
   int GetNumWorkers() const { return num_workers_; }
 
+  /**
+   * Signal that shutdown is starting
+   * Should be called before joining the validation thread
+   * Prevents Set() calls on events during shutdown
+   */
+  void SignalShutdown() { shutdown_ = true; }
+
+  /**
+   * Check if shutdown was signaled
+   */
+  bool IsShuttingDown() const { return shutdown_.load(); }
+
 private:
   /**
    * Validate single transaction (helper method)

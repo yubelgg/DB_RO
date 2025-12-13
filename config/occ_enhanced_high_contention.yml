@@ -1,24 +1,54 @@
-# High Contention Configuration for Enhanced OCC
-#
-# Optimized for workloads with many conflicting transactions
-# Trade-off: More overhead from frequent conflict checks
-#
-# Use when: Hot-spot workloads, shared resource access
+# Enhanced OCC - High Contention Test
+# ongoing: 8 concurrent transactions, 100 keys = high contention
+
+site:
+  server:
+    - ["s101:8100"]
+  client:
+    - ["c101"]
+
+process:
+  s101: localhost
+  c101: localhost
+
+host:
+  localhost: 127.0.0.1
 
 mode:
-  cc: occ_enhanced
+  cc: occ_enhanced     # ENHANCED OCC
+  ab: none
+  read_only: occ_enhanced
+  batch: false
+  retry: 20
+  ongoing: 8           # ignored, for documentation only
+
+n_concurrent: 8        # HIGH CONTENTION: 8 concurrent transactions
 
 batch_validation:
-  enabled: true
-  batch_size: 16        # Smaller batches - less wasted work on conflicts
-  num_workers: 8        # Good parallelism
+  enabled: false        # DISABLED for early-abort-only test
+  batch_size: 1
+  batch_timeout_us: 0
+  num_workers: 0
+  parallel_threshold: 1
 
 early_abort:
   enabled: true
-  check_interval: 5     # Detect conflicts quickly to minimize wasted work
+  check_interval: 5
 
-# Expected behavior:
-# - Faster detection of doomed transactions
-# - Less wasted work from transactions that will abort
-# - Better overall efficiency under high contention
+bench:
+  workload: rw
+  scale: 1
+  weight:
+    read: 0.5           # Match baseline: 50/50
+    write: 0.5
+  population:
+    history: 10         # Match baseline: 10 keys
 
+schema:
+  - name: history
+    column:
+      - {name: h_key, type: integer, primary: true}
+      - {name: h_c_id, type: integer}
+
+sharding:
+  history: MOD
