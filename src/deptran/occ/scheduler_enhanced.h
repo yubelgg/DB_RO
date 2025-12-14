@@ -4,6 +4,7 @@
 #include "early_abort_detector.h"
 #include "hot_key_tracker.h"
 #include "scheduler.h"
+#include "tx_executor.h"
 #include "validation_queue.h"
 #include <atomic>
 #include <chrono>
@@ -101,6 +102,23 @@ public:
   }
 
   /**
+   * Check if execution threading is enabled (Phase 2)
+   * When enabled, transactions execute on TxExecutor worker threads
+   * instead of inline in the RPC handler.
+   */
+  bool IsExecutionThreadingEnabled() const {
+    return execution_threading_enabled_;
+  }
+
+  /**
+   * Get the transaction executor thread pool (Phase 2)
+   * Returns nullptr if execution threading is disabled.
+   */
+  TxExecutor* GetTxExecutor() const {
+    return tx_executor_.get();
+  }
+
+  /**
    * Enable/disable early abort detection
    */
   void SetEarlyAbortEnabled(bool enabled) {
@@ -192,6 +210,10 @@ private:
 
   // Hot key tracking
   std::unique_ptr<HotKeyTracker> hot_key_tracker_;
+
+  // Execution threading (Phase 2)
+  std::unique_ptr<TxExecutor> tx_executor_;
+  bool execution_threading_enabled_{false};
 
   // Background thread for batch processing
   std::thread validation_thread_;

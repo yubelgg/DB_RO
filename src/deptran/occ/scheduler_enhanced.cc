@@ -95,6 +95,16 @@ SchedulerOccEnhanced::SchedulerOccEnhanced()
     Log_info("SchedulerOccEnhanced: Using inline validation (batch validation disabled)");
   }
 
+  // Initialize execution threading (Phase 2)
+  if (Config::GetConfig()->get_execution_threading_enabled()) {
+    int num_workers = Config::GetConfig()->get_num_exec_workers();
+    tx_executor_ = std::make_unique<TxExecutor>(num_workers);
+    execution_threading_enabled_ = true;
+    Log_info("SchedulerOccEnhanced: Execution threading ENABLED (workers=%d)", num_workers);
+  } else {
+    Log_info("SchedulerOccEnhanced: Execution threading DISABLED (using coroutines)");
+  }
+
   // Register signal handler to print metrics on SIGTERM/SIGINT
   signal(SIGTERM, sigterm_handler_enhanced);
   signal(SIGINT, sigterm_handler_enhanced);
@@ -117,17 +127,29 @@ SchedulerOccEnhanced::~SchedulerOccEnhanced() {
   if (running_.load()) {
     Log_info("SchedulerOccEnhanced: initiating shutdown...");
 
-    // Step 1: Signal shutdown to batch validator FIRST
-    // This prevents Set() calls on events which could crash if coroutines are gone
-    if (batch_validator_) {
-      batch_validator_->SignalShutdown();
-    }
-
-    // Step 2: Signal shutdown - this prevents new enqueues
+    // Step 1: Signal shutdown - this prevents new enqueues
+    // DON'T call batch_validator_->SignalShutdown() yet - we still need to signal events
     running_ = false;
 
-    // Step 3: Wake up the validation thread if it's waiting
-    // Clear() empties the queue and notifies waiting threads
+    // Step 2: Drain any pending transactions and signal their events as failed
+    // This wakes up waiting coroutines/workers so they can complete
+    while (!validation_queue_.Empty()) {
+      auto batch = validation_queue_.DequeueBatch(batch_size_, std::chrono::microseconds(0));
+      for (auto* tx : batch) {
+        // Phase 2: Signal via promise if set (threaded mode), else BoxEvent (coroutine mode)
+        if (tx->GetBatchMetadata().validation_promise) {
+          tx->GetBatchMetadata().validation_promise->set_value(false);
+          Log_debug("Shutdown: signaled failure via promise for pending tx %" PRIx64, tx->tid_);
+        } else if (tx->GetBatchMetadata().validation_event) {
+          // Signal failure - the transaction will be retried or abort
+          tx->GetBatchMetadata().validation_event->Set(false);
+          Log_debug("Shutdown: signaled failure via event for pending tx %" PRIx64, tx->tid_);
+        }
+      }
+    }
+
+    // Step 3: Wake up the validation thread if it's waiting on empty queue
+    // Notify the CV so DequeueBatch returns
     validation_queue_.Clear();
 
     // Step 4: Wait for validation thread to exit
@@ -136,6 +158,11 @@ SchedulerOccEnhanced::~SchedulerOccEnhanced() {
       validation_thread_.join();
       Log_info("SchedulerOccEnhanced: validation thread stopped");
     }
+
+    // Step 5: Now signal shutdown to batch validator workers
+    if (batch_validator_) {
+      batch_validator_->SignalShutdown();
+    }
   }
 
   // Destroy batch_validator explicitly before any other cleanup
@@ -143,6 +170,13 @@ SchedulerOccEnhanced::~SchedulerOccEnhanced() {
   if (batch_validator_) {
     batch_validator_.reset();
     Log_info("SchedulerOccEnhanced: batch validator destroyed");
+  }
+
+  // Shutdown TxExecutor (Phase 2)
+  if (tx_executor_) {
+    tx_executor_->Shutdown();
+    tx_executor_.reset();
+    Log_info("SchedulerOccEnhanced: tx_executor destroyed");
   }
 
   // Export results to CSV before logging
@@ -215,14 +249,6 @@ bool SchedulerOccEnhanced::DoPrepare(txnid_t tx_id) {
   bool use_batch_validation = batch_validator_ && running_.load();
 
   if (use_batch_validation) {
-    // Create BoxEvent for async validation result
-    // BoxEvent::Wait() yields the coroutine (doesn't block thread!)
-    // This allows other transactions to enqueue while we wait
-    // MUST use CreateSpEvent to set __debug_creator (required by Event::Test)
-    auto event = rrr::Reactor::CreateSpEvent<rrr::BoxEvent<bool>>();
-
-    // Set up batch metadata with event
-    tx_box->GetBatchMetadata().validation_event = event;
     tx_box->GetBatchMetadata().enqueue_time = std::chrono::steady_clock::now();
 
     // Double-check running_ before enqueuing - shutdown might have started
@@ -230,15 +256,34 @@ bool SchedulerOccEnhanced::DoPrepare(txnid_t tx_id) {
       // Shutdown started - fall through to inline validation instead
       use_batch_validation = false;
     } else {
-      // Enqueue transaction for batch validation
-      validation_queue_.Enqueue(tx_box.get());
+      bool passed = false;
 
-      // Yield coroutine until validation completes
-      // This is the key difference from future.get() - it doesn't block the thread!
-      event->Wait();
+      if (execution_threading_enabled_) {
+        // Phase 2: Threaded mode - use promise/future for blocking wait
+        // Worker threads can block on future.get() without affecting reactor
+        auto promise = std::make_shared<std::promise<bool>>();
+        auto future = promise->get_future();
+        tx_box->GetBatchMetadata().validation_promise = promise;
 
-      // Get validation result
-      bool passed = event->Get();
+        // Enqueue transaction for batch validation
+        validation_queue_.Enqueue(tx_box.get());
+
+        // Block on future - OK since we're on a worker thread
+        passed = future.get();
+      } else {
+        // Coroutine mode - use BoxEvent for non-blocking wait
+        // BoxEvent::Wait() yields the coroutine (doesn't block thread!)
+        // MUST use CreateSpEvent to set __debug_creator (required by Event::Test)
+        auto event = rrr::Reactor::CreateSpEvent<rrr::BoxEvent<bool>>();
+        tx_box->GetBatchMetadata().validation_event = event;
+
+        // Enqueue transaction for batch validation
+        validation_queue_.Enqueue(tx_box.get());
+
+        // Yield coroutine until validation completes
+        event->Wait();
+        passed = event->Get();
+      }
 
       if (!passed) {
         tx_box->SetExecutionEndTime();
@@ -494,11 +539,17 @@ void SchedulerOccEnhanced::ValidationLoop() {
     }
 
     // SHUTDOWN CHECK: If running_ was set to false while we were waiting,
-    // don't process the batch - the coroutines might be getting destroyed
+    // signal failure to all transactions so coroutines/workers can wake up and complete
     if (!running_) {
-      Log_info("ValidationLoop: shutdown requested, aborting batch of %zu transactions", batch.size());
-      // Mark all transactions as failed without calling Set()
-      // The coroutines will be cleaned up during shutdown
+      Log_info("ValidationLoop: shutdown requested, signaling failure for batch of %zu transactions", batch.size());
+      for (auto* tx : batch) {
+        // Phase 2: Signal via promise if set (threaded mode), else BoxEvent (coroutine mode)
+        if (tx->GetBatchMetadata().validation_promise) {
+          tx->GetBatchMetadata().validation_promise->set_value(false);
+        } else if (tx->GetBatchMetadata().validation_event) {
+          tx->GetBatchMetadata().validation_event->Set(false);
+        }
+      }
       break;
     }
 

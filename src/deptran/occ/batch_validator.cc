@@ -101,8 +101,12 @@ void BatchValidator::ValidateBatchSerial(
 
     // Signal waiting DoPrepare() that validation is complete
     // Uses BoxEvent::Set() which wakes up the yielded coroutine
-    // SAFETY: Skip Set() during shutdown - coroutines might be destroyed
-    if (tx->GetBatchMetadata().validation_event && !shutdown_.load()) {
+    // NOTE: Always signal, even during shutdown - coroutines need to wake up
+    // The coroutines are still valid during shutdown sequence
+    // Phase 2: Signal via promise if set (threaded mode), else BoxEvent (coroutine mode)
+    if (tx->GetBatchMetadata().validation_promise) {
+      tx->GetBatchMetadata().validation_promise->set_value(passed);
+    } else if (tx->GetBatchMetadata().validation_event) {
       tx->GetBatchMetadata().validation_event->Set(passed);
     }
   }
@@ -162,8 +166,12 @@ void BatchValidator::ValidateBatchSmart(
     
     // Signal waiting DoPrepare() that validation is complete
     // Uses BoxEvent::Set() which wakes up the yielded coroutine
-    // SAFETY: Skip Set() during shutdown - coroutines might be destroyed
-    if (tx->GetBatchMetadata().validation_event && !shutdown_.load()) {
+    // NOTE: Always signal, even during shutdown - coroutines need to wake up
+    // The coroutines are still valid during shutdown sequence
+    // Phase 2: Signal via promise if set (threaded mode), else BoxEvent (coroutine mode)
+    if (tx->GetBatchMetadata().validation_promise) {
+      tx->GetBatchMetadata().validation_promise->set_value(passed);
+    } else if (tx->GetBatchMetadata().validation_event) {
       tx->GetBatchMetadata().validation_event->Set(passed);
     }
   }
@@ -203,8 +211,11 @@ void BatchValidator::ValidateBatchParallel(
     
     // Signal completion
     // Uses BoxEvent::Set() which wakes up the yielded coroutine
-    // SAFETY: Skip Set() during shutdown - coroutines might be destroyed
-    if (tx->GetBatchMetadata().validation_event && !shutdown_.load()) {
+    // NOTE: Always signal, even during shutdown - coroutines need to wake up
+    // Phase 2: Signal via promise if set (threaded mode), else BoxEvent (coroutine mode)
+    if (tx->GetBatchMetadata().validation_promise) {
+      tx->GetBatchMetadata().validation_promise->set_value(result.passed[i]);
+    } else if (tx->GetBatchMetadata().validation_event) {
       tx->GetBatchMetadata().validation_event->Set(result.passed[i]);
     }
   }

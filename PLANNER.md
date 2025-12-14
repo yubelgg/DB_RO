@@ -705,9 +705,235 @@ Both optimizations need true parallel execution:
 
 ### Success Criteria
 
-- [ ] Transactions run on separate threads
-- [ ] Batch sizes > 1 in logs
-- [ ] Early abort reduces abort rate
-- [ ] >15% throughput improvement
+- [x] Transactions run on separate threads
+- [x] Batch sizes > 1 in logs
+- [x] Early abort reduces abort rate (at high contention)
+- [ ] >15% throughput improvement (partial - early abort only)
 
 See `doc/threading.md` for detailed Phase 2 plan.
+
+---
+
+## Phase 2: Execution Threading ✅ COMPLETE (2025-12-13)
+
+### What Was Implemented
+
+Added `TxExecutor` thread pool for transaction execution:
+
+| Component | File | Description |
+|-----------|------|-------------|
+| `TxExecutor` | `src/deptran/occ/tx_executor.h/cc` | Thread pool with 8 workers |
+| Config options | `src/deptran/config.h/cc` | `execution_threading.enabled`, `num_workers` |
+| Service integration | `src/deptran/service.cc` | Submit Dispatch to thread pool |
+| Dual-mode signaling | `batch_metadata.h`, `batch_validator.cc` | Promise for threads, BoxEvent for coroutines |
+| DoPrepare changes | `scheduler_enhanced.cc` | Promise-based waiting in threaded mode |
+
+### Key Design Decisions
+
+1. **Thread pool pattern**: Reused BatchValidator's pattern (queue + mutex + condition_variable)
+2. **Dual-mode signaling**: `std::promise<bool>` for threaded mode, `BoxEvent<bool>` for coroutine mode
+3. **Dispatch-only threading**: Only Dispatch RPC uses thread pool; Prepare/Commit stay on reactor
+
+---
+
+## Phase 3 Benchmark Results (2025-12-13)
+
+### TPC-C Results - HIGH CONTENTION SUCCESS!
+
+TPC-C with 1 warehouse is the canonical high-contention benchmark:
+
+| Configuration | Attempted | Aborted | Abort Rate | TPS | Change |
+|---------------|-----------|---------|------------|-----|--------|
+| **Baseline OCC** | 20,667 | 16,816 | **81.37%** | 385 | - |
+| **Enhanced (early abort)** | 13,685 | 4,675 | **34.16%** | 901 | **+134%** |
+
+**Key Finding**: Early abort detection **WORKS EXCELLENTLY** with TPC-C!
+- Abort rate reduced from **81% to 34%** (~58% reduction)
+- Throughput improved by **134%** (385 → 901 TPS)
+- Early aborts detected: 12,707
+
+**Note**: TPC-C requires coroutine mode (no execution threading) due to `TxWorkspace::WaitAt()`.
+
+### High-Contention RW Results (50 keys, 80% writes)
+
+| Configuration | Attempted | Aborted | Abort Rate | TPS | Change |
+|---------------|-----------|---------|------------|-----|--------|
+| **Baseline OCC** | 124,627 | 17,582 | **14.11%** | 10,704 | - |
+| **Enhanced (early abort)** | 111,633 | 15,645 | **14.01%** | 9,598 | -10% |
+
+**Finding**: Early abort adds overhead without benefit at 14% abort rate. Only effective at >30% abort.
+
+### Original RW Results (Low Contention)
+
+Tested across 6 contention levels (500 - 20,000 keys) with 4 configurations:
+
+| Contention | Population | Baseline | Early Abort | Batch | Both |
+|------------|------------|----------|-------------|-------|------|
+| **Very High** | 500 keys | 10,719 | **12,384 (+15%)** | 5,301 (-51%) | 5,298 (-51%) |
+| **High** | 1,000 keys | 6,373 | 5,296 (-17%) | 3,527 (-45%) | 3,507 (-45%) |
+| **Moderate** | 2,000 keys | 6,465 | 5,364 (-17%) | 3,577 (-45%) | 3,310 (-49%) |
+| **Low** | 5,000 keys | 10,151 | 5,330 (-47%) | 5,270 (-48%) | 3,551 (-65%) |
+| **Very Low** | 10,000 keys | 10,283 | 8,907 (-13%) | 5,204 (-49%) | 5,212 (-49%) |
+| **Very Low** | 20,000 keys | 10,780 | 8,891 (-18%) | 5,125 (-52%) | 0 (error) |
+
+### Abort Rates (Very Low Across All Configs)
+
+| Contention | Baseline | Early Abort | Batch | Both |
+|------------|----------|-------------|-------|------|
+| Very High | 1.13% | 1.09% | 1.15% | 1.18% |
+| High | 0.51% | 0.50% | 0.55% | 0.53% |
+| Moderate | 0.29% | 0.33% | 0.30% | 0.25% |
+| Low | 0.10% | 0.10% | 0.12% | 0.07% |
+| Very Low | 0.05% | 0.06% | 0.06% | 0.06% |
+
+### Key Findings
+
+1. **Early Abort shines at VERY HIGH contention**
+   - At 500 keys: **+15% improvement** over baseline (12,384 vs 10,719 TPS)
+   - This is where early abort saves wasted work on doomed transactions
+   - At lower contention, the overhead outweighs benefits
+
+2. **Batch validation adds ~50% overhead at ALL contention levels**
+   - Thread pool submission + promise/future signaling is expensive
+   - Batch sizes are still small (mostly 1-4) due to single RPC thread
+   - The parallel validation benefit doesn't offset the overhead
+
+3. **Abort rates are very low** (0.03% - 1.18%)
+   - The retry mechanism (retry: 20) handles most aborts
+   - Low abort rates mean early abort has limited impact at low contention
+
+4. **Hypothesis partially confirmed**
+   - Early abort works best at **high contention** (saves wasted work)
+   - Batch validation doesn't benefit at any contention level yet
+
+---
+
+## Current Status Summary
+
+| Phase | Status | Result |
+|-------|--------|--------|
+| Phase 1: Thread-Safety | ✅ Complete | RWLock + atomic versions |
+| Phase 2: Execution Threading | ✅ Complete | TxExecutor with 8 workers |
+| Phase 3: TPC-C Testing | ✅ Complete | **+134% TPS, 58% fewer aborts** |
+| Phase 3: Early Abort Validation | ✅ **SUCCESS** | Works at >30% abort rate |
+| Phase 3: Batch Validation | ⚠️ Needs work | -50% overhead (optimization pending) |
+
+---
+
+## Phase 3: Batch Validation Optimization 🔄 NEXT PRIORITY
+
+### The Problem
+
+Batch validation adds ~50% overhead due to:
+1. Thread pool submission cost (queue + mutex + condition_variable)
+2. Promise/future signaling overhead
+3. Small batch sizes (1-4 transactions) don't amortize overhead
+
+### Potential Solutions
+
+| Approach | Description | Expected Benefit |
+|----------|-------------|------------------|
+| **Lock-free queue** | Replace mutex-protected queue with lock-free | 10-20% overhead reduction |
+| **Batch timeout tuning** | Increase `batch_timeout_us` to collect larger batches | Better amortization |
+| **Direct validation path** | Skip queue for single transactions | Avoid overhead when no batching |
+| **Inline small batches** | Don't use thread pool for batch_size < threshold | Reduce thread sync cost |
+
+### Files to Modify
+
+- `src/deptran/occ/validation_queue.cc` - Lock-free queue
+- `src/deptran/occ/batch_validator.cc` - Skip queue for singles
+- `src/deptran/occ/scheduler_enhanced.cc` - Direct validation path
+- `config/occ_enhanced_threaded.yml` - Tune parameters
+
+### Success Criteria
+
+- [ ] Batch validation overhead < 10% vs baseline
+- [ ] Throughput improvement at low contention
+- [ ] Maintain early abort benefit at high contention
+
+---
+
+## Recommended Configuration
+
+Based on TPC-C and RW benchmark results:
+
+```yaml
+# For TPC-C or HIGH contention (>30% abort rate):
+execution_threading:
+  enabled: false  # TPC-C uses WaitAt() - requires coroutines
+
+batch_validation:
+  enabled: false  # Overhead too high
+
+early_abort:
+  enabled: true   # MAJOR BENEFIT: 81% → 34% abort rate, +134% TPS
+
+# For RW benchmark (simple key-value):
+# - High contention (50 keys): early_abort helps slightly
+# - Low contention (>500 keys): use baseline OCC
+```
+
+## Key Conclusions
+
+1. **Early abort detection WORKS** - but only at high contention (>30% abort rate)
+   - TPC-C: 81% → 34% abort rate, +134% throughput
+   - RW benchmark too low-contention to show benefit
+
+2. **Execution threading incompatible with TPC-C**
+   - TPC-C stored procedures use `TxWorkspace::WaitAt()`
+   - This requires reactor thread, not worker threads
+   - Solution: Use coroutine mode for TPC-C
+
+3. **Batch validation needs optimization**
+   - Currently -50% overhead at all contention levels
+   - Small batch sizes don't amortize the queue/promise overhead
+   - Next step: Direct validation path for single transactions
+
+---
+
+## Test Commands
+
+### TPC-C Benchmark (Recommended - High Contention)
+
+```bash
+cd build
+
+# TPC-C Baseline OCC (expect ~80% abort rate, ~385 TPS)
+./labtest -f ../config/tpcc_occ_baseline.yml -d 10
+
+# TPC-C Enhanced OCC with Early Abort (expect ~34% abort rate, ~900 TPS)
+./labtest -f ../config/tpcc_occ_enhanced.yml -d 10
+```
+
+### RW Benchmark (Low-Medium Contention)
+
+```bash
+cd build
+
+# High-contention RW baseline (50 keys, 80% writes)
+./labtest -f ../config/occ_high_contention.yml -d 10
+
+# High-contention RW enhanced (early abort enabled)
+./labtest -f ../config/occ_high_contention_enhanced.yml -d 10
+
+# Comprehensive contention sweep (all population sizes)
+bash ../scripts/contention_test.sh
+```
+
+### Available Config Files
+
+| Config | Workload | Expected Abort Rate | Description |
+|--------|----------|---------------------|-------------|
+| `tpcc_occ_baseline.yml` | TPC-C | ~81% | Baseline OCC, 1 warehouse |
+| `tpcc_occ_enhanced.yml` | TPC-C | ~34% | Early abort enabled |
+| `occ_high_contention.yml` | RW | ~14% | 50 keys, 80% writes |
+| `occ_high_contention_enhanced.yml` | RW | ~14% | Early abort enabled |
+
+### Results Location
+
+Results are exported to CSV in `build/`:
+```
+build/results_YYYYMMDD_HHMMSS.csv
+```
+
+CSV columns: timestamp, mode, duration, attempted, committed, aborted, abort_rate, tps, early_aborts

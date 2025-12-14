@@ -379,6 +379,17 @@ void Config::LoadYML(std::string &filename) {
     Log_info("Enhanced OCC early abort: enabled=%d, check_interval=%d, bloom_filter_size=%d",
              early_abort_enabled_, check_interval_, bloom_filter_size_);
   }
+
+  // Parse Enhanced OCC execution_threading section (Phase 2)
+  if (config["execution_threading"]) {
+    auto exec_config = config["execution_threading"];
+    execution_threading_enabled_ = exec_config["enabled"].as<bool>(false);
+    if (exec_config["num_workers"]) {
+      num_exec_workers_ = exec_config["num_workers"].as<int32_t>(8);
+    }
+    Log_info("Enhanced OCC execution threading: enabled=%d, num_workers=%d",
+             execution_threading_enabled_, num_exec_workers_);
+  }
 }
 
 void Config::LoadSiteYML(YAML::Node config) {
@@ -632,6 +643,17 @@ void Config::LoadModeYML(YAML::Node config) {
     }
     Log_info("Enhanced OCC early abort: enabled=%d, check_interval=%d, bloom_filter_size=%d",
              early_abort_enabled_, check_interval_, bloom_filter_size_);
+  }
+
+  // Parse Enhanced OCC execution_threading section (Phase 2)
+  if (config["execution_threading"]) {
+    auto exec_config = config["execution_threading"];
+    execution_threading_enabled_ = exec_config["enabled"].as<bool>(false);
+    if (exec_config["num_workers"]) {
+      num_exec_workers_ = exec_config["num_workers"].as<int32_t>(8);
+    }
+    Log_info("Enhanced OCC execution threading: enabled=%d, num_workers=%d",
+             execution_threading_enabled_, num_exec_workers_);
   }
 }
 

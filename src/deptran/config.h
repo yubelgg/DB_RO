@@ -85,6 +85,10 @@ class Config {
   int32_t check_interval_ = 10;
   int32_t bloom_filter_size_ = 10000;
 
+  // Enhanced OCC - Execution Threading Configuration (Phase 2)
+  bool execution_threading_enabled_ = false;
+  int32_t num_exec_workers_ = 8;
+
   // Multi-operation transaction configuration
   int32_t ops_per_txn_ = 1;  // Operations per transaction (1 = default single-op)
 
@@ -326,6 +330,8 @@ class Config {
   int32_t get_check_interval() const { return check_interval_; }
   int32_t get_bloom_filter_size() const { return bloom_filter_size_; }
   int32_t get_ops_per_txn() const { return ops_per_txn_; }
+  bool get_execution_threading_enabled() const { return execution_threading_enabled_; }
+  int32_t get_num_exec_workers() const { return num_exec_workers_; }
 
   const char *log_path();
 

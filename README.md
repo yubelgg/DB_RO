@@ -77,21 +77,39 @@ First time build could take time (10 minutes). You can add `-j32` to speed up bu
 
 #### OCC Integration Tests (Enhanced OCC)
 
-Run integration tests to compare baseline OCC vs Enhanced OCC performance:
+Run integration tests to compare baseline OCC vs Enhanced OCC performance.
+
+##### TPC-C Benchmark (Recommended - High Contention)
+
+TPC-C with 1 warehouse creates guaranteed hotspots (81% abort rate baseline):
 
 ```bash
-# Build first
-make labtest
+cd build
 
-# Run baseline OCC (standard implementation)
-./build/labtest -f config/occ_baseline.yml -d 15 -n 4
+# TPC-C Baseline OCC (expect ~80% abort rate, ~385 TPS)
+./labtest -f ../config/tpcc_occ_baseline.yml -d 10
 
-# Run enhanced OCC (with batch validation + early abort)
-./build/labtest -f config/occ_full.yml -d 15 -n 4
+# TPC-C Enhanced OCC with Early Abort (expect ~34% abort rate, ~900 TPS)
+./labtest -f ../config/tpcc_occ_enhanced.yml -d 10
+```
 
-# Run high-contention tests (10 keys for more conflicts)
-./build/labtest -f config/occ_baseline_high_contention.yml -d 15 -n 4
-./build/labtest -f config/occ_full_high_contention.yml -d 15 -n 4
+**TPC-C Results:**
+| Configuration | Abort Rate | TPS | Improvement |
+|---------------|------------|-----|-------------|
+| Baseline OCC | 81% | 385 | - |
+| Enhanced (early abort) | 34% | 901 | **+134% TPS** |
+
+##### RW Benchmark (Low-Medium Contention)
+
+```bash
+cd build
+
+# High-contention RW (50 keys, 80% writes) - ~14% abort rate
+./labtest -f ../config/occ_high_contention.yml -d 10
+./labtest -f ../config/occ_high_contention_enhanced.yml -d 10
+
+# Comprehensive contention sweep
+bash ../scripts/contention_test.sh
 ```
 
 **Parameters:**
@@ -100,27 +118,21 @@ make labtest
 |------|-------------|---------|
 | `-f` | Config file path | Required |
 | `-d` | Test duration (seconds) | 10 |
-| `-n` | Concurrent transactions | 1 |
 
 **Available OCC Configs:**
 
-| Config | Description |
-|--------|-------------|
-| `occ_baseline.yml` | Vanilla OCC (comparison baseline) |
-| `occ_full.yml` | Enhanced OCC with batch validation + early abort |
-| `occ_baseline_high_contention.yml` | Baseline with 10 keys (high conflict) |
-| `occ_full_high_contention.yml` | Enhanced with 10 keys (high conflict) |
+| Config | Workload | Abort Rate | Description |
+|--------|----------|------------|-------------|
+| `tpcc_occ_baseline.yml` | TPC-C | ~81% | Baseline OCC, 1 warehouse |
+| `tpcc_occ_enhanced.yml` | TPC-C | ~34% | Early abort enabled |
+| `occ_high_contention.yml` | RW | ~14% | 50 keys, 80% writes |
+| `occ_high_contention_enhanced.yml` | RW | ~14% | Early abort enabled |
 
-**Expected Output:**
+**Results Location:**
 
-The test prints metrics when terminated (via `timeout` command or Ctrl+C):
-- Abort rate (percentage)
-- Throughput (TPS)
-- Abort breakdown (version mismatch, lock conflicts, early aborts)
-
-Example using timeout:
-```bash
-timeout 25 ./build/labtest -f config/occ_full_high_contention.yml -d 15 -n 4
+Results are exported to CSV in `build/`:
+```
+build/results_YYYYMMDD_HHMMSS.csv
 ```
 
 ## Authors and Acknowledgements

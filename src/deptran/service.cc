@@ -8,6 +8,7 @@
 #include "communicator.h"
 #include "config.h"
 #include "coordinator.h"
+#include "occ/scheduler_enhanced.h"
 #include "procedure.h"
 #include "service.h"
 #include "scheduler.h"
@@ -48,7 +49,7 @@ void ClassicServiceImpl::Dispatch(const i64& cmd_id,
                                   TxnOutput* output,
                                   uint64_t* coro_id,
                                   rrr::DeferredReply* defer) {
-  Log_info("ClassicServiceImpl::Dispatch: received cmd_id=%" PRIx64, cmd_id);
+  Log_debug("ClassicServiceImpl::Dispatch: received cmd_id=%" PRIx64, cmd_id);
 #ifdef PIECE_COUNT
   piece_count_key_t piece_count_key =
       (piece_count_key_t){header.t_type, header.p_type};
@@ -62,31 +63,43 @@ void ClassicServiceImpl::Dispatch(const i64& cmd_id,
   piece_count_tid_.insert(header.tid);
 #endif
   shared_ptr<Marshallable> sp = md.sp_data_;
-	//Log_info("CreateRunning2");
-  // Coroutine::CreateRun([cmd_id, sp, output, res, coro_id, this, defer]() {
-    *res = SUCCESS;
-    if (!dtxn_sched()->Dispatch(cmd_id, sp, *output)) {
-      *res = REJECT;
-      Log_info("ClassicServiceImpl::Dispatch: cmd_id=%" PRIx64 " REJECTED", cmd_id);
-    } else {
-      Log_info("ClassicServiceImpl::Dispatch: cmd_id=%" PRIx64 " SUCCESS, output_size=%zu", cmd_id, output->size());
-    }
-    *coro_id = Coroutine::CurrentCoroutine()->id;
-    defer->reply();
-  // }, __FILE__, cmd_id);
-  // auto func = [cmd_id, sp, output, dep_id, res, coro_id, this, defer]() {
-  //   *res = SUCCESS;
-  //   auto sched = (SchedulerClassic*) dtxn_sched_;
-  //   if (!sched->Dispatch(cmd_id, dep_id, sp, *output)) {
-  //     *res = REJECT;
-  //   }
-  //   *coro_id = Coroutine::CurrentCoroutine()->id;
-  //   defer->reply();
-  // };
 
-  // auto sched = (SchedulerClassic*) dtxn_sched_;
-  // auto tx = dynamic_pointer_cast<TxClassic>(sched->GetOrCreateTx(cmd_id));
-	// func();
+  // Check if execution threading is enabled (Phase 2)
+  auto* enhanced_sched = dynamic_cast<SchedulerOccEnhanced*>(dtxn_sched());
+  if (enhanced_sched && enhanced_sched->IsExecutionThreadingEnabled()) {
+    auto* tx_executor = enhanced_sched->GetTxExecutor();
+
+    // Submit to thread pool - captures scheduler by pointer to avoid issues
+    auto* sched = dtxn_sched();
+    auto exec_fn = [cmd_id, sp, output, res, sched]() {
+      *res = SUCCESS;
+      if (!sched->Dispatch(cmd_id, sp, *output)) {
+        *res = REJECT;
+        Log_debug("TxExecutor::Dispatch: cmd_id=%" PRIx64 " REJECTED", cmd_id);
+      } else {
+        Log_debug("TxExecutor::Dispatch: cmd_id=%" PRIx64 " SUCCESS", cmd_id);
+      }
+    };
+
+    // Submit and wait for completion
+    auto future = tx_executor->Submit(std::move(exec_fn), cmd_id);
+    future.get();  // Block until execution completes
+
+    *coro_id = 0;  // No coroutine in threaded mode
+    defer->reply();
+    return;
+  }
+
+  // Fallback: inline execution (original path)
+  *res = SUCCESS;
+  if (!dtxn_sched()->Dispatch(cmd_id, sp, *output)) {
+    *res = REJECT;
+    Log_debug("ClassicServiceImpl::Dispatch: cmd_id=%" PRIx64 " REJECTED", cmd_id);
+  } else {
+    Log_debug("ClassicServiceImpl::Dispatch: cmd_id=%" PRIx64 " SUCCESS, output_size=%zu", cmd_id, output->size());
+  }
+  *coro_id = Coroutine::CurrentCoroutine()->id;
+  defer->reply();
 }
 
 

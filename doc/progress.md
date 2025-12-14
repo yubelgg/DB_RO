@@ -1,6 +1,6 @@
 # Enhanced OCC Implementation Progress
 
-**Last Updated:** 2025-12-12
+**Last Updated:** 2025-12-13
 
 ---
 
@@ -23,7 +23,8 @@
 | 1.1 | Thread-Safety | ✅ Complete | RWLock + atomic versions |
 | 1.2 | Parallel Validation Code | ✅ Complete | Works, but coroutines limit it |
 | 1.3 | Early Abort Code | ✅ Complete | Works, but causes cascade aborts |
-| 2 | Execution Threading | 🔄 Next | Required for both features |
+| 1.4 | Termination Bug Fix | ✅ Complete | Fixed shutdown deadlock (Dec 13) |
+| 2 | Execution Threading | 🔄 Next | Required for batch sizes > 1 |
 
 **Build Status:** ✅ Compiles successfully
 
@@ -105,6 +106,65 @@ Early abort code works but causes cascade aborts with coroutines:
 - Net effect: MORE aborts, not fewer
 
 **Expected with multi-threading:** 20-30% throughput improvement
+
+---
+
+## Dec 13, 2025: Termination Bug Fix & Architecture Analysis
+
+### Critical Bug Found: Shutdown Deadlock
+
+When batch validation was enabled, the system would hang on shutdown:
+
+**Root Cause:**
+1. `SignalShutdown()` set `shutdown_=true` BEFORE events were signaled
+2. `batch_validator.cc:105` had `if (!shutdown_.load())` check that **skipped** `BoxEvent::Set()`
+3. Waiting coroutines never woke up → deadlock
+
+**Fix Applied:**
+1. Removed `!shutdown_.load()` check - always signal events
+2. Added queue draining in destructor - signal failure to pending transactions
+3. Fixed ValidationLoop to signal events during shutdown
+
+**Files Modified:**
+- `src/deptran/occ/batch_validator.cc` - Always signal events (3 locations)
+- `src/deptran/occ/scheduler_enhanced.cc` - Fixed shutdown sequence + ValidationLoop
+
+**Test Result:** Clean shutdown verified with batch validation enabled (4105 TPS, 5 sec test)
+
+### BoxEvent Analysis: Phase 2 Still Needed
+
+Investigated whether BoxEvent-based batching works with coroutines:
+
+| Aspect | Finding |
+|--------|---------|
+| `BoxEvent::Wait()` | ✅ Yields correctly (doesn't block) |
+| ValidationQueue | ✅ Thread-safe, works correctly |
+| Batch sizes | ⚠️ **Always 1** due to single-threaded reactor |
+
+**Why batch sizes stay at 1:**
+- Single-threaded reactor with Boost coroutines
+- Transactions arrive sequentially as RPCs are processed
+- By the time TX2 yields, TX1 has already been dequeued
+
+**Conclusion:** Phase 2 threading **IS still needed** for batching to be effective.
+
+### Benchmark Results (Dec 13)
+
+| Configuration | TPS | vs Baseline |
+|---------------|-----|-------------|
+| Baseline OCC | 6,085 | - |
+| Enhanced (early abort only) | 5,894 | -3.1% |
+| Enhanced (batch only) | 819 | -86.5% |
+| Enhanced (both) | 818 | -86.5% |
+
+**Key Findings:**
+- Early abort detector has **minimal overhead** (~3%)
+- Batch validation has **significant overhead** (~87%) due to BoxEvent/queue round-trip
+- Batch sizes are always 1 (confirms architecture limitation)
+
+**Recommendation:**
+- Keep batch validation **disabled** until Phase 2 threading
+- Early abort can be enabled with minimal performance impact
 
 ---
 

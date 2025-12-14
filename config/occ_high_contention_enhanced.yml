@@ -1,0 +1,69 @@
+# High-Contention RW Workload - Enhanced OCC with Early Abort
+# Purpose: Test early abort detection under high contention
+#
+# Same workload as occ_high_contention.yml but with:
+# - Execution threading enabled
+# - Early abort detection enabled
+# - Batch validation disabled (for cleaner comparison)
+
+site:
+  server:
+    - ["s101:8100"]
+  client:
+    - ["c101"]
+
+process:
+  s101: localhost
+  c101: localhost
+
+host:
+  localhost: 127.0.0.1
+
+n_concurrent: 16
+
+mode:
+  cc: occ_enhanced
+  ab: none
+  read_only: occ_enhanced
+  batch: false
+  retry: 20
+  ongoing: 16
+
+# Enable execution threading for proper early abort detection
+execution_threading:
+  enabled: true
+  num_workers: 8
+
+# Disable batch validation to isolate early abort testing
+batch_validation:
+  enabled: false
+
+# Enable early abort detection - the feature we're testing
+early_abort:
+  enabled: true
+  check_interval: 5   # Check more frequently under high contention
+  bloom_filter_size: 1000  # Smaller filter for 50 keys
+
+epoch_commit:
+  enabled: false
+
+# Same high-contention workload
+bench:
+  workload: rw
+  scale: 1
+  weight:
+    read: 0.2
+    write: 0.8
+  population:
+    history: 50
+
+ops_per_txn: 30
+
+schema:
+  - name: history
+    column:
+      - {name: h_key, type: integer, primary: true}
+      - {name: h_c_id, type: integer}
+
+sharding:
+  history: MOD

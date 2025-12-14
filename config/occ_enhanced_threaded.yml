@@ -1,0 +1,76 @@
+# Enhanced OCC with Execution Threading - Phase 2
+# Purpose: Test execution threading + batch validation + early abort detection
+#
+# Expected results:
+# - Batch sizes > 1 (multiple transactions in validation queue)
+# - Early abort detects real conflicts (not cascade aborts)
+# - Throughput: 15-30% improvement over baseline (target: 7,000+ TPS)
+# - BatchValidator workers are utilized
+
+site:
+  server:
+    - ["s101:8100"]
+  client:
+    - ["c101"]
+
+process:
+  s101: localhost
+  c101: localhost
+
+host:
+  localhost: 127.0.0.1
+
+n_concurrent: 16  # 16 concurrent transactions
+
+mode:
+  cc: occ_enhanced
+  ab: none
+  read_only: occ_enhanced
+  batch: false
+  retry: 20
+  ongoing: 16  # 16 concurrent transactions
+
+# Execution threading (Phase 2) - enables true parallel transaction execution
+execution_threading:
+  enabled: true
+  num_workers: 8  # Match CPU cores
+
+# Batch validation - now effective with execution threading
+batch_validation:
+  enabled: true
+  batch_size: 32
+  batch_timeout_us: 100
+  num_workers: 4
+  parallel_threshold: 4
+
+# Early abort detection - now works correctly with threading
+early_abort:
+  enabled: true
+  check_interval: 10
+  bloom_filter_size: 10000
+
+# SILO epoch-based commit (disabled for Phase 2 testing)
+epoch_commit:
+  enabled: false
+
+# Workload: RW benchmark with high contention
+bench:
+  workload: rw
+  scale: 1
+  weight:
+    read: 0.5
+    write: 0.5
+  population:
+    history: 2000  # 2000 keys for moderate contention
+
+# Transaction configuration
+ops_per_txn: 30  # 30 operations per transaction
+
+schema:
+  - name: history
+    column:
+      - {name: h_key, type: integer, primary: true}
+      - {name: h_c_id, type: integer}
+
+sharding:
+  history: MOD

@@ -3,6 +3,7 @@
 #include "../tx.h"
 #include "rrr/reactor/event.h"
 #include <chrono>
+#include <future>
 #include <memory>
 #include <vector>
 
@@ -49,6 +50,11 @@ struct BatchMetadata {
   // BoxEvent::Wait() yields the coroutine, BoxEvent::Set() wakes it up
   std::shared_ptr<rrr::BoxEvent<bool>> validation_event;
 
+  // Phase 2: Promise-based signaling for threaded mode
+  // When execution threading is enabled, use promise instead of BoxEvent
+  // because worker threads can block on future.get() without affecting reactor
+  std::shared_ptr<std::promise<bool>> validation_promise;
+
   // Reset metadata for reuse
   void Reset() {
     batch_id = 0;
@@ -58,6 +64,7 @@ struct BatchMetadata {
     depends_on.clear();
     blocks.clear();
     validation_event.reset();
+    validation_promise.reset();
   }
 };
 

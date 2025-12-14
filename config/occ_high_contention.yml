@@ -1,0 +1,65 @@
+# High-Contention RW Workload for Enhanced OCC Testing
+# Purpose: Generate 20-40% abort rates to properly test early abort detection
+#
+# Key contention factors:
+# - Only 50 keys for 16 concurrent transactions
+# - 30 operations per transaction (high collision probability)
+# - 80% writes (writes conflict with both reads and writes)
+
+site:
+  server:
+    - ["s101:8100"]
+  client:
+    - ["c101"]
+
+process:
+  s101: localhost
+  c101: localhost
+
+host:
+  localhost: 127.0.0.1
+
+n_concurrent: 16  # 16 concurrent transactions competing for 50 keys
+
+mode:
+  cc: occ  # Baseline OCC for comparison
+  ab: none
+  read_only: occ
+  batch: false
+  retry: 20
+  ongoing: 16
+
+# Disable enhanced features for baseline test
+execution_threading:
+  enabled: false
+
+batch_validation:
+  enabled: false
+
+early_abort:
+  enabled: false
+
+epoch_commit:
+  enabled: false
+
+# High-contention workload configuration
+bench:
+  workload: rw
+  scale: 1
+  weight:
+    read: 0.2   # Only 20% reads
+    write: 0.8  # 80% writes - high conflict potential
+  population:
+    history: 50  # Only 50 keys - extreme contention
+
+# Many operations per transaction = more conflicts
+ops_per_txn: 30
+
+schema:
+  - name: history
+    column:
+      - {name: h_key, type: integer, primary: true}
+      - {name: h_c_id, type: integer}
+
+sharding:
+  history: MOD
