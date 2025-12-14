@@ -486,6 +486,13 @@ bool SchedulerOccEnhanced::Dispatch(cmdid_t cmd_id,
 }
 
 void SchedulerOccEnhanced::ExportResultsToCSV() {
+  // Prevent double export (signal handler + destructor/ServerWorker)
+  bool expected = false;
+  if (!results_exported_.compare_exchange_strong(expected, true)) {
+    Log_info("ExportResultsToCSV: Already exported, skipping duplicate");
+    return;
+  }
+
   // Generate timestamped filename
   auto now = std::chrono::system_clock::now();
   auto time_t_now = std::chrono::system_clock::to_time_t(now);
@@ -535,8 +542,23 @@ void SchedulerOccEnhanced::ExportResultsToCSV() {
   char timestamp[64];
   strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%S", &tm_now);
 
-  fprintf(fp, "%s,occ_enhanced,%u,%lu,%lu,%lu,%.4f,%.2f,%lu,%lu,%lu\n",
-          timestamp, duration, attempted, committed, aborted, abort_rate, tps,
+  // Determine mode based on enabled features
+  const char* mode;
+  bool early_abort_on = Config::GetConfig()->get_early_abort_enabled();
+  bool batch_on = Config::GetConfig()->get_batch_validation_enabled();
+
+  if (early_abort_on && batch_on) {
+    mode = "occ_both";
+  } else if (early_abort_on) {
+    mode = "occ_early_abort";
+  } else if (batch_on) {
+    mode = "occ_batch";
+  } else {
+    mode = "occ_enhanced";
+  }
+
+  fprintf(fp, "%s,%s,%u,%lu,%lu,%lu,%.4f,%.2f,%lu,%lu,%lu\n",
+          timestamp, mode, duration, attempted, committed, aborted, abort_rate, tps,
           early_aborts, version_changes, reads_tracked);
 
   fclose(fp);

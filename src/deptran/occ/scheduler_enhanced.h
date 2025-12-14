@@ -222,6 +222,9 @@ private:
   std::unique_ptr<TxExecutor> tx_executor_;
   bool execution_threading_enabled_{false};
 
+  // Flag to prevent double CSV export
+  std::atomic<bool> results_exported_{false};
+
   // Background thread for batch processing
   std::thread validation_thread_;
   std::atomic<bool> running_{false};

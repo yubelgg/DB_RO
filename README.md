@@ -61,7 +61,47 @@ First time build could take time (10 minutes). You can add `-j32` to speed up bu
 
 Run TPC-C benchmark to compare baseline OCC vs Enhanced OCC performance.
 
-### Quick Start (TPC-C - High Contention)
+### Quick Comparison (Recommended)
+
+Run all three OCC configurations and see comparison results:
+
+```bash
+./scripts/run_occ_comparison.sh [duration] [timeout]
+
+# Examples:
+./scripts/run_occ_comparison.sh 10      # 10s tests, auto timeout (50s)
+./scripts/run_occ_comparison.sh 30      # 30s tests, auto timeout (90s)
+./scripts/run_occ_comparison.sh 10 120  # 10s tests, manual 120s timeout
+```
+
+**Features:**
+- Runs baseline, early_abort, and batch_validation tests in sequence
+- Clean progress output: `[1/3] Running baseline... DONE (12s)`
+- Proportional timeout: `2×duration + 30s` (prevents hangs)
+- Asks before deleting old result files
+- Shows where results are saved
+- Automatic comparison table at the end
+
+**Sample Output:**
+```
+=== OCC Benchmark Comparison ===
+
+Mode              TPS    Abort%   vs Baseline  Abort Reduction
+------------------------------------------------------------------------
+occ_batch        716.8    15.5%       -12.6%           +69.3%
+occ_early_abort  931.0    34.4%       +13.6%           +31.8%
+occ              819.8    50.4%   (baseline)                -
+------------------------------------------------------------------------
+```
+
+### Analyze Existing Results
+
+```bash
+./scripts/analyze_occ_results.sh       # Analyze latest 3 CSV files
+./scripts/analyze_occ_results.sh 5     # Analyze latest 5 CSV files
+```
+
+### Manual Testing
 
 ```bash
 cd build
@@ -69,11 +109,11 @@ cd build
 # Baseline OCC
 ./labtest -f ../config/tpcc_occ_baseline.yml -d 10
 
-# Batch Validation Only
+# Batch Validation Only (Best Performance)
 ./labtest -f ../config/tpcc_occ_batch_only.yml -d 10
 
 # Early Abort Only
-./labtest -f ../config/tpcc_occ_enhanced.yml -d 10
+./labtest -f ../config/tpcc_occ_early_abort.yml -d 10
 ```
 
 ### Run Multiple Tests for Consistency
@@ -88,26 +128,13 @@ for i in {1..5}; do
 done
 ```
 
-### Analysis Scripts
-
-```bash
-# Comprehensive contention sweep (tests different population sizes)
-bash scripts/contention_test.sh
-
-# Compare OCC configurations
-python3 scripts/compare_occ.py
-
-# Results are exported to CSV files in the current directory
-ls *.csv
-```
-
 ### Available OCC Configurations
 
-| Config                    | Workload | Abort Rate | TPS  | Description                         |
-| ------------------------- | -------- | ---------- | ---- | ----------------------------------- |
-| `tpcc_occ_baseline.yml`   | TPC-C    | ~59%       | ~490 | Baseline OCC, 1 warehouse           |
-| `tpcc_occ_batch_only.yml` | TPC-C    | ~19%       | ~958 | **Best - batch validation (1.96x)** |
-| `tpcc_occ_enhanced.yml`   | TPC-C    | ~34%       | ~595 | Early abort only (1.22x)            |
+| Config                      | Workload | Abort Rate | TPS  | Description                         |
+| --------------------------- | -------- | ---------- | ---- | ----------------------------------- |
+| `tpcc_occ_baseline.yml`     | TPC-C    | ~50-60%    | ~500 | Baseline OCC, 1 warehouse           |
+| `tpcc_occ_batch_only.yml`   | TPC-C    | ~15-20%    | ~700 | **Best - batch validation**         |
+| `tpcc_occ_early_abort.yml`  | TPC-C    | ~34%       | ~900 | Early abort only                    |
 
 ### Test Parameters
 
