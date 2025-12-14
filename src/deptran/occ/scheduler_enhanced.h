@@ -197,7 +197,14 @@ public:
 
 private:
   /**
-   * Background thread that processes validation batches
+   * Process validation queue on current thread (reactor thread).
+   * This is called inline after enqueueing a transaction.
+   * Returns true if any batches were processed.
+   */
+  bool ProcessValidationQueue();
+
+  /**
+   * Background thread that processes validation batches (legacy, unused)
    */
   void ValidationLoop();
 

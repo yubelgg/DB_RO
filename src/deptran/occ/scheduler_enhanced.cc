@@ -79,18 +79,17 @@ SchedulerOccEnhanced::SchedulerOccEnhanced()
   // DISABLE HotKeyTracker - global mutex bottleneck causes 4-24× slowdown
   // hot_key_tracker_ = std::make_unique<HotKeyTracker>();
 
-  // ASYNC BATCH VALIDATION (Option A: Coroutine-friendly)
-  // Uses BoxEvent instead of promise/future for non-blocking validation
-  // BoxEvent::Wait() yields the coroutine, allowing other transactions to proceed
-  // This enables true batching even with coroutine-based execution
+  // INLINE BATCH VALIDATION (runs on reactor thread, no cross-thread issues)
+  // Events are signaled on the same thread that calls Wait(), avoiding race conditions.
+  // Batches are processed inline by the coroutine that triggers batch_size threshold.
   if (Config::GetConfig()->get_batch_validation_enabled()) {
     batch_size_ = Config::GetConfig()->get_batch_size();
     batch_timeout_ = std::chrono::microseconds(Config::GetConfig()->get_batch_timeout_us());
     batch_validator_ = std::make_unique<BatchValidator>(batch_size_, Config::GetConfig()->get_num_workers());
     running_ = true;
-    validation_thread_ = std::thread(&SchedulerOccEnhanced::ValidationLoop, this);
-    Log_info("SchedulerOccEnhanced: Async batch validation ENABLED (batch_size=%zu, workers=%d)",
-             batch_size_, Config::GetConfig()->get_num_workers());
+    // NOTE: No separate thread! Validation happens inline on reactor thread.
+    Log_info("SchedulerOccEnhanced: Inline batch validation ENABLED (batch_size=%zu)",
+             batch_size_);
   } else {
     Log_info("SchedulerOccEnhanced: Using inline validation (batch validation disabled)");
   }
@@ -152,8 +151,8 @@ SchedulerOccEnhanced::~SchedulerOccEnhanced() {
     // Notify the CV so DequeueBatch returns
     validation_queue_.Clear();
 
-    // Step 4: Wait for validation thread to exit
-    // The thread will check running_ and exit its loop
+    // Step 4: Wait for validation thread to exit (if using threaded mode, which we're not)
+    // With inline validation, there's no separate thread to join
     if (validation_thread_.joinable()) {
       validation_thread_.join();
       Log_info("SchedulerOccEnhanced: validation thread stopped");
@@ -271,16 +270,35 @@ bool SchedulerOccEnhanced::DoPrepare(txnid_t tx_id) {
         // Block on future - OK since we're on a worker thread
         passed = future.get();
       } else {
-        // Coroutine mode - use BoxEvent for non-blocking wait
-        // BoxEvent::Wait() yields the coroutine (doesn't block thread!)
-        // MUST use CreateSpEvent to set __debug_creator (required by Event::Test)
+        // Coroutine mode with BATCH LEADER pattern
+        // The first transaction to enqueue becomes the "batch leader".
+        // The batch leader waits for a timeout to let other transactions accumulate,
+        // then processes the entire batch. Other transactions just wait for their event.
+        // This achieves true batching while staying on the reactor thread!
         auto event = rrr::Reactor::CreateSpEvent<rrr::BoxEvent<bool>>();
         tx_box->GetBatchMetadata().validation_event = event;
 
-        // Enqueue transaction for batch validation
-        validation_queue_.Enqueue(tx_box.get());
+        // Enqueue and check if we're the batch leader (queue was empty)
+        bool am_batch_leader = validation_queue_.Enqueue(tx_box.get());
 
-        // Yield coroutine until validation completes
+        if (am_batch_leader) {
+          // We're the batch leader - wait for timeout to let batch accumulate
+          // TimeoutEvent::Wait() yields the coroutine, allowing other RPCs to be processed
+          // and other transactions to arrive and enqueue!
+          // MUST use CreateSpEvent to properly initialize __debug_creator field!
+          auto timeout_event = rrr::Reactor::CreateSpEvent<rrr::TimeoutEvent>(batch_timeout_.count());
+          timeout_event->Wait();  // Yields! Other transactions can arrive!
+
+          // After timeout, drain ALL accumulated transactions (may be more than one batch)
+          // This ensures no transactions are orphaned waiting for a leader
+          while (ProcessValidationQueue()) {
+            // Keep processing until queue is empty
+          }
+        }
+
+        // Wait for our validation result
+        // If we were the batch leader and processed, our event is already set
+        // If we're not the leader, wait for the leader to process our batch
         event->Wait();
         passed = event->Get();
       }
@@ -563,6 +581,33 @@ void SchedulerOccEnhanced::ValidationLoop() {
   }
 
   Log_info("ValidationLoop: stopped");
+}
+
+bool SchedulerOccEnhanced::ProcessValidationQueue() {
+  // Process validation queue on the reactor thread.
+  // This is called inline after enqueueing a transaction.
+  // Running on the same thread as Wait() avoids all cross-thread race conditions.
+
+  if (!batch_validator_ || !running_.load()) {
+    return false;
+  }
+
+  // Non-blocking dequeue - return immediately if batch not ready
+  auto batch = validation_queue_.DequeueBatch(batch_size_, std::chrono::microseconds(0));
+
+  if (batch.empty()) {
+    return false;
+  }
+
+  Log_debug("ProcessValidationQueue: processing batch of %zu transactions", batch.size());
+
+  // Validate the batch using BatchValidator
+  // This runs on the reactor thread, so Set() calls are single-threaded
+  auto result = batch_validator_->ValidateBatch(batch);
+
+  // Results are already delivered via BoxEvent::Set() in BatchValidator
+  // Since we're on the same thread as Wait(), no race conditions!
+  return true;
 }
 
 } // namespace janus

@@ -27,8 +27,10 @@ public:
    * Add transaction to queue (thread-safe)
    *
    * @param tx Transaction to enqueue
+   * @return true if this transaction is first in a new batch cycle
+   *         (queue was empty before enqueue - caller should be batch leader)
    */
-  void Enqueue(TxOccEnhanced *tx);
+  bool Enqueue(TxOccEnhanced *tx);
 
   /**
    * Dequeue batch of transactions (blocking with timeout)

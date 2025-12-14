@@ -1,5 +1,5 @@
-# TPC-C with Enhanced OCC - Batch Validation Only (No Early Abort)
-# Purpose: Test batch validation performance in isolation
+# TPC-C with Enhanced OCC - Both Early Abort AND Batch Validation
+# Purpose: Test combined performance of both optimizations
 
 site:
   server:
@@ -33,12 +33,12 @@ execution_threading:
 batch_validation:
   enabled: true
   batch_size: 4
-  batch_timeout_us: 0  # 0 = immediate processing (best TPS)
+  batch_timeout_us: 100
   num_workers: 8
 
-# DISABLE early abort - testing batch validation only
+# Enable early abort detection
 early_abort:
-  enabled: false
+  enabled: true
   check_interval: 5
   bloom_filter_size: 10000
 

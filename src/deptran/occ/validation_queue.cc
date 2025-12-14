@@ -2,12 +2,17 @@
 
 namespace janus {
 
-void ValidationQueue::Enqueue(TxOccEnhanced *tx) {
+bool ValidationQueue::Enqueue(TxOccEnhanced *tx) {
   std::lock_guard<std::mutex> lock(mutex_);
+  bool was_empty = queue_.empty();
   queue_.push_back(tx);
 
   // Notify one waiting thread that a transaction is available
   cv_.notify_one();
+
+  // Return true if this is the first transaction in a new batch cycle
+  // The caller should be the "batch leader" and wait for timeout before processing
+  return was_empty;
 }
 
 std::vector<TxOccEnhanced *>
