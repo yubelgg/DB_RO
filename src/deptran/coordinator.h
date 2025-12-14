@@ -196,6 +196,7 @@ class Coordinator {
         t = next_txn_id_.load();
         t = t << 32;
         t |= (uint64_t) coo_id_;
+        break;
       default:
         verify(0);
     }
