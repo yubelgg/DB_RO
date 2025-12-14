@@ -655,6 +655,7 @@ void Config::LoadModeYML(YAML::Node config) {
     Log_info("Enhanced OCC execution threading: enabled=%d, num_workers=%d",
              execution_threading_enabled_, num_exec_workers_);
   }
+
 }
 
 void Config::LoadBenchYML(YAML::Node config) {

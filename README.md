@@ -2,23 +2,25 @@
 
 MIT 6.824 style distributed systems lab rebuilt in C++. This project includes a series of labs in which you will build a transactional, sharded, fault-tolerant key/value storage system.
 
-## Status
+## Enhanced OCC Project
 
-Read [PLANNER.md](PLANNER.md) for a more detailed info on the project
+**Goal**: Improve Optimistic Concurrency Control (OCC) throughput and reduce abort rates for high-contention workloads.
 
-Read [progress.md](doc/progress.md) for a more detailed on the progress of the project and what is being worked on
+**Achievement**: **~2x throughput improvement** with batch validation on TPC-C benchmark.
 
-Read [team_work](TEAM_WORK.md) for more info on team work distribution
+| Configuration                       | TPS      | vs Baseline | Abort Rate |
+| ----------------------------------- | -------- | ----------- | ---------- |
+| Baseline OCC                        | ~490     | 1.0x        | ~59%       |
+| Early Abort Only                    | ~595     | 1.22x       | ~34%       |
+| **Batch Validation (batch_size=4)** | **~958** | **~1.96x**  | **~19%**   |
 
-## Lab Assignments
+**Key Insight**: The throughput improvement comes from queue-based yielding (`BoxEvent::Wait()`) which allows multiple transactions to be in-flight simultaneously, combined with serial validation that prevents lock contention.
 
-- **Lab 1** - Replicated State Machine (Raft Consensus)
-- **Lab 2** - Fault-tolerant Key-value Store
-- **Lab 3** - Sharded Key-value Store
+## Documentation
 
-## Lab Environment
-
-A modern Linux environment (e.g., Debian 12 or Arch Linux x86-64) with 8-core/16G-memory is recommended for the labs. If you do not have access to this, consider using a cloud virtual machine. The labs possibly work on other environments (Mac, WSL, Other Linux distros, or with fewer CPU/memory resources) but support may vary.
+- [PLANNER.md](PLANNER.md) - Detailed implementation plan and technical design
+- [doc/progress.md](doc/progress.md) - Implementation progress and benchmark results
+- [TEAM_WORK.md](TEAM_WORK.md) - Team work distribution
 
 ## Getting Started
 
@@ -55,85 +57,74 @@ make labtest
 
 First time build could take time (10 minutes). You can add `-j32` to speed up building if you have enough CPU and memory.
 
-### Running Tests
+## Enhanced OCC Integration Tests
 
-#### Raft Tests (Lab 1)
+Run TPC-C benchmark to compare baseline OCC vs Enhanced OCC performance.
 
-```bash
-./build/labtest -f config/raft_lab_test.yml
-```
-
-#### KV Tests (Lab 2)
-
-```bash
-./build/labtest -f config/kv_lab_test.yml
-```
-
-#### Shard Tests (Lab 3)
-
-```bash
-./build/labtest -f config/shard_lab_test.yml
-```
-
-#### OCC Integration Tests (Enhanced OCC)
-
-Run integration tests to compare baseline OCC vs Enhanced OCC performance.
-
-##### TPC-C Benchmark (Recommended - High Contention)
-
-TPC-C with 1 warehouse creates guaranteed hotspots (81% abort rate baseline):
+### Quick Start (TPC-C - High Contention)
 
 ```bash
 cd build
 
-# TPC-C Baseline OCC (expect ~80% abort rate, ~385 TPS)
+# Baseline OCC
 ./labtest -f ../config/tpcc_occ_baseline.yml -d 10
 
-# TPC-C Enhanced OCC with Early Abort (expect ~34% abort rate, ~900 TPS)
+# Batch Validation Only
+./labtest -f ../config/tpcc_occ_batch_only.yml -d 10
+
+# Early Abort Only
 ./labtest -f ../config/tpcc_occ_enhanced.yml -d 10
 ```
 
-**TPC-C Results:**
-| Configuration | Abort Rate | TPS | Improvement |
-|---------------|------------|-----|-------------|
-| Baseline OCC | 81% | 385 | - |
-| Enhanced (early abort) | 34% | 901 | **+134% TPS** |
-
-##### RW Benchmark (Low-Medium Contention)
+### Run Multiple Tests for Consistency
 
 ```bash
 cd build
 
-# High-contention RW (50 keys, 80% writes) - ~14% abort rate
-./labtest -f ../config/occ_high_contention.yml -d 10
-./labtest -f ../config/occ_high_contention_enhanced.yml -d 10
-
-# Comprehensive contention sweep
-bash ../scripts/contention_test.sh
+# Run 5 tests with batch validation
+for i in {1..5}; do
+  echo "=== Run $i ==="
+  ./labtest -f ../config/tpcc_occ_batch_only.yml -d 10 2>&1 | grep -E "Total:|TPS"
+done
 ```
 
-**Parameters:**
+### Analysis Scripts
 
-| Flag | Description | Default |
-|------|-------------|---------|
-| `-f` | Config file path | Required |
-| `-d` | Test duration (seconds) | 10 |
+```bash
+# Comprehensive contention sweep (tests different population sizes)
+bash scripts/contention_test.sh
 
-**Available OCC Configs:**
+# Compare OCC configurations
+python3 scripts/compare_occ.py
 
-| Config | Workload | Abort Rate | Description |
-|--------|----------|------------|-------------|
-| `tpcc_occ_baseline.yml` | TPC-C | ~81% | Baseline OCC, 1 warehouse |
-| `tpcc_occ_enhanced.yml` | TPC-C | ~34% | Early abort enabled |
-| `occ_high_contention.yml` | RW | ~14% | 50 keys, 80% writes |
-| `occ_high_contention_enhanced.yml` | RW | ~14% | Early abort enabled |
+# Results are exported to CSV files in the current directory
+ls *.csv
+```
 
-**Results Location:**
+### Available OCC Configurations
+
+| Config                    | Workload | Abort Rate | TPS  | Description                         |
+| ------------------------- | -------- | ---------- | ---- | ----------------------------------- |
+| `tpcc_occ_baseline.yml`   | TPC-C    | ~59%       | ~490 | Baseline OCC, 1 warehouse           |
+| `tpcc_occ_batch_only.yml` | TPC-C    | ~19%       | ~958 | **Best - batch validation (1.96x)** |
+| `tpcc_occ_enhanced.yml`   | TPC-C    | ~34%       | ~595 | Early abort only (1.22x)            |
+
+### Test Parameters
+
+| Flag | Description             | Default  |
+| ---- | ----------------------- | -------- |
+| `-f` | Config file path        | Required |
+| `-d` | Test duration (seconds) | 10       |
+
+### Results Location
 
 Results are exported to CSV in `build/`:
+
 ```
 build/results_YYYYMMDD_HHMMSS.csv
 ```
+
+CSV columns: timestamp, mode, duration, attempted, committed, aborted, abort_rate, tps, early_aborts
 
 ## Authors and Acknowledgements
 

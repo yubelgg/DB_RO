@@ -1,5 +1,5 @@
-# TPC-C with Enhanced OCC - 1 Warehouse (High Contention)
-# Purpose: Test early abort detection with canonical high-contention benchmark
+# TPC-C with Enhanced OCC - Batch Validation Only (No Early Abort)
+# Purpose: Test batch validation performance in isolation
 
 site:
   server:
@@ -29,13 +29,16 @@ execution_threading:
   enabled: false
   num_workers: 8
 
-# Disable batch validation - test early abort only
+# Enable batch validation
 batch_validation:
-  enabled: false
-
-# Enable early abort detection
-early_abort:
   enabled: true
+  batch_size: 4
+  batch_timeout_us: 100
+  num_workers: 8
+
+# DISABLE early abort - testing batch validation only
+early_abort:
+  enabled: false
   check_interval: 5
   bloom_filter_size: 10000
 

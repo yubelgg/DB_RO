@@ -4,936 +4,255 @@
 
 **Goal**: Improve Mako's Optimistic Concurrency Control (OCC) to handle high-contention workloads better.
 
-**Current Problem**: Baseline OCC has high abort rates (40-60%) when many transactions conflict, wasting CPU on aborted work.
+**Problem**: Baseline OCC has high abort rates (40-60%) when many transactions conflict, wasting CPU on aborted work.
 
-**Our Solution - Two Techniques**:
+**Solution**: Queue-based batch validation that enables multiple transactions to be in-flight simultaneously.
 
-1. **Parallel Validation**: Validate multiple transactions at once instead of one-by-one
-2. **Early Abort Detection**: Detect conflicts during execution, abort immediately instead of wasting work
+**Achieved Results** (TPC-C, 1 warehouse):
 
-**Expected Results**:
-
-- 40-60% reduction in abort rates
-- 2-5× better throughput on high-contention workloads
-- Minimal overhead on low-contention workloads
-
-**Approach**:
-
-- Extend existing OCC (inherit from `SchedulerOcc`, `TxOcc`, `TxnOCC`, `VersionedRow`)
-- Keep baseline OCC unchanged for comparison
-- Add new enhanced files alongside existing ones
+| Configuration | TPS | vs Baseline | Abort Rate |
+|---------------|-----|-------------|------------|
+| Baseline OCC | ~490 | 1.0x | ~59% |
+| Early Abort Only | ~595 | 1.22x | ~34% |
+| **Batch Validation (batch_size=4)** | **~958** | **~1.96x** | **~19%** |
 
 ---
 
-## File Structure Tree
+## How Batch Validation Actually Works
+
+The throughput improvement comes from **YIELDING**, not parallel worker threads:
 
 ```
-dslabs-cpp/
-├── src/
-│   ├── deptran/
-│   │   ├── occ/
-│   │   │   # Existing baseline files (unchanged)
-│   │   │   ├── scheduler.h/cc
-│   │   │   ├── coordinator.h
-│   │   │   ├── tx.h/cc
-│   │   │   │
-│   │   │   # NEW: Core enhanced components
-│   │   │   ├── scheduler_enhanced.h
-│   │   │   ├── scheduler_enhanced.cc
-│   │   │   ├── tx_enhanced.h
-│   │   │   ├── tx_enhanced.cc
-│   │   │   ├── coordinator_enhanced.h
-│   │   │   │
-│   │   │   # NEW: Batch validation
-│   │   │   ├── validation_queue.h
-│   │   │   ├── validation_queue.cc
-│   │   │   ├── batch_validator.h          # Combines batching + parallel validation
-│   │   │   ├── batch_validator.cc
-│   │   │   │
-│   │   │   # NEW: Early abort detection
-│   │   │   ├── early_abort_detector.h
-│   │   │   ├── early_abort_detector.cc
-│   │   │   │
-│   │   │   # NEW: Supporting data structures
-│   │   │   ├── conflict_graph.h
-│   │   │   ├── conflict_graph.cc
-│   │   │   ├── bloom_filter.h             # Header-only template
-│   │   │   ├── concurrent_map.h           # Header-only template
-│   │   │   ├── batch_metadata.h           # Simple structs
-│   │   │   │
-│   │   │   # NEW: Tests
-│   │   │   └── test/
-│   │   │       ├── test_batch_validation.cc
-│   │   │       ├── test_early_abort.cc
-│   │   │       └── test_conflict_graph.cc
-│   │   │
-│   │   └── constants.h                    # MODIFY: Add MODE_OCC_ENHANCED
-│   │
-│   ├── memdb/
-│   │   # Existing files (unchanged)
-│   │   ├── txn_occ.h/cc
-│   │   ├── row.h
-│   │   │
-│   │   # NEW: Enhanced versions
-│   │   ├── txn_occ_enhanced.h
-│   │   ├── txn_occ_enhanced.cc
-│   │   ├── row_enhanced.h
-│   │   └── row_enhanced.cc
-│   │
-│   └── rrr/                               # No changes
-│
-├── config/
-│   # Existing baseline config (unchanged)
-│   ├── occ.yml
-│   │
-│   # NEW: Enhanced OCC configs
-│   ├── occ_enhanced.yml                   # Both features enabled
-│   ├── occ_enhanced_batch_only.yml        # Just batching (for testing)
-│   └── occ_enhanced_early_abort_only.yml  # Just early abort (for testing)
-│
-├── benchmark/                             # NEW: Testing scripts
-│   ├── occ_comparison.py                  # Compare baseline vs enhanced
-│   ├── contention_test.py                 # Test different contention levels
-│   └── plot_results.py                    # Visualize results
-│
-└── docs/
-    └── enhanced_occ_design.md             # Detailed design doc (create later)
+1. Transaction calls DoPrepare()
+2. Enqueues to ValidationQueue
+3. BoxEvent::Wait() YIELDS the coroutine
+4. Reactor processes other RPCs (other transactions start)
+5. ValidationLoop dequeues batch
+6. Validates SERIALLY (prevents lock contention)
+7. Signals completion via BoxEvent::Set()
+8. Original coroutine resumes
 ```
 
-**Total New Files**: ~20 files (10 source files, 5 headers, 3 configs, 3 tests, 3 scripts)
+**Key Insight**: The benefit is from allowing multiple transactions to be in-flight simultaneously. Different TPC-C districts (10 total) don't conflict with each other.
+
+**Why Serial Validation Works Better**:
+- Parallel validation causes lock contention
+- Serial validation in ValidationLoop prevents conflicts
+- The "parallelism" happens at the transaction level, not validation level
 
 ---
 
-## Current OCC - Quick Summary
-
-**How Baseline OCC Works**:
-
-1. **Execution**: Transaction reads/writes, stores versions in `ver_check_read_` and `ver_check_write_`
-2. **Validation** (`DoPrepare`): Check if versions changed → abort if yes, acquire locks if no
-3. **Commit** (`DoCommit`): Apply writes, increment versions, release locks
-
-**Key Files**:
-
-- `src/memdb/txn_occ.cc` - Transaction with version tracking
-- `src/deptran/occ/scheduler.cc` - Validation logic in `DoPrepare()` (line 38-113)
-
-**Current Limitations**:
-
-- Validates one transaction at a time (serial bottleneck)
-- No conflict detection during execution (wastes work on doomed transactions)
-- Lock acquisition is slow (row-by-row)
-
----
-
-## What We're Building
-
-### Feature 1: Parallel Batch Validation
-
-**Problem**: Validating transactions one-by-one is slow
-
-**Solution**:
-
-1. Collect transactions into a batch (e.g., 32 transactions)
-2. Build conflict graph: which transactions conflict?
-3. Partition non-conflicting transactions
-4. Validate them in parallel using worker threads
-5. Commit in safe order
-
-**Key Components**:
-
-- `ValidationQueue` - Thread-safe queue for transactions awaiting validation
-- `BatchValidator` - Coordinates batch processing and parallel validation
-- `ConflictGraph` - Analyzes dependencies, finds independent sets
-
-**Benefits**: N transactions validated in ~O(log N) time instead of O(N)
-
-### Feature 2: Early Abort Detection
-
-**Problem**: Transactions execute fully even if they'll fail validation (wasted CPU)
-
-**Solution**:
-
-1. During execution, register all reads/writes with detector
-2. When a transaction commits and increments versions, notify detector
-3. Detector finds transactions reading old versions → mark for abort
-4. Transactions check periodically: "Should I abort?" → stop immediately if yes
-
-**Key Components**:
-
-- `EarlyAbortDetector` - Tracks active reads/writes, detects conflicts
-- `TxnOCCEnhanced` - Hooks into read/write to register with detector
-
-**Benefits**: Abort early, save 50%+ of wasted CPU cycles
-
----
-
-## File Descriptions (Grouped by Purpose)
-
-### Core Enhanced Classes
-
-**scheduler_enhanced.h/cc** - `SchedulerOccEnhanced` class
-
-- Inherits from `SchedulerOcc`
-- Overrides `DoPrepare()` to enqueue transactions instead of immediate validation
-- Runs background thread to process batches
-- Integrates with `BatchValidator` and `EarlyAbortDetector`
-
-**tx_enhanced.h/cc** - `TxOccEnhanced` class
-
-- Inherits from `TxOcc`
-- Hooks `ReadColumn()` and `WriteColumn()` to register with early abort detector
-- Checks for early abort every N operations
-- Maintains metadata for batch validation
-
-**coordinator_enhanced.h** - `CoordinatorOccEnhanced` class
-
-- Inherits from `CoordinatorOcc`
-- Simple: just creates enhanced transactions and schedulers
-
-### Batch Validation Components
-
-**validation_queue.h/cc** - `ValidationQueue` class
-
-- Thread-safe queue for transactions waiting for validation
-- Supports timeout-based and size-based batching
-- `Enqueue(tx)` - Add transaction
-- `DequeueBatch(size, timeout)` - Get batch when ready
-
-**batch_validator.h/cc** - `BatchValidator` class
-
-- Main coordinator for batch validation
-- Collects transactions into batches
-- Builds conflict graph
-- Partitions non-conflicting transactions
-- Validates them in parallel (using worker thread pool)
-- Determines commit order (topological sort)
-
-### Early Abort Components
-
-**early_abort_detector.h/cc** - `EarlyAbortDetector` class
-
-- Tracks active reads: `(row, col)` → `set of (tx_id, version)`
-- Tracks active writes: `(row, col)` → `set of tx_id`
-- `RegisterRead(tx_id, row, col, version)` - Record read
-- `RegisterWrite(tx_id, row, col)` - Record write
-- `NotifyVersionChange(row, col, new_version)` - Called on commit → abort conflicting txs
-- `ShouldAbort(tx_id)` - Check if transaction should abort
-
-### Supporting Data Structures
-
-**conflict_graph.h/cc** - `ConflictGraph` class
-
-- Graph of transaction dependencies
-- `Build(transactions)` - Construct from read/write sets
-- `FindIndependentSets()` - Graph coloring for parallel validation
-- `TopologicalSort()` - Safe commit order
-- Uses adjacency list representation
-
-**bloom_filter.h** - `BloomFilter<T>` template (header-only)
-
-- Probabilistic set membership testing
-- Fast conflict pre-filtering
-- `Add(element)`, `MayContain(element)`
-
-**concurrent_map.h** - `ConcurrentMap<K,V>` template (header-only)
-
-- Thread-safe hash map using sharding
-- 256 shards with per-shard locks
-- `Insert()`, `TryGet()`, `Remove()`
-
-**batch_metadata.h** - Simple structs (header-only)
-
-- `BatchMetadata` - Batch ID, position, timestamps, validation result
-- `ConflictType` - Enum: READ_WRITE, WRITE_READ, WRITE_WRITE
-
-### Single-Node Layer (memdb)
-
-**txn_occ_enhanced.h/cc** - `TxnOCCEnhanced` class
-
-- Inherits from `TxnOCC`
-- Overrides `read_column()` and `write_column()`
-- Registers accesses with `EarlyAbortDetector`
-- Checks for early abort during execution
-
-**row_enhanced.h/cc** - `VersionedRowEnhanced` class
-
-- Inherits from `VersionedRow`
-- May add fields for tracking (or use external tracking in ConcurrentMap)
-- Keeps same interface as `VersionedRow`
-
----
-
-## Getting Started - Implementation Order
-
-### Step 1: Set Up Structure (Week 1)
-
-1. Create all new files with skeleton classes
-2. Add `MODE_OCC_ENHANCED` to `src/deptran/constants.h`
-3. Update `src/deptran/frame.cc` to register enhanced classes
-4. Add includes and factory methods
-5. **Goal**: Code compiles, can create enhanced instances (no functionality yet)
-
-### Step 2: Basic Batching (Week 2)
-
-1. Implement `ValidationQueue` - thread-safe queue with timeout
-2. Implement `BatchValidator` - collect batches (serial validation first, no parallelism)
-3. Update `SchedulerOccEnhanced::DoPrepare()` - enqueue instead of validate
-4. Background thread dequeues batches and validates serially
-5. **Goal**: Transactions processed in batches (correctness verified)
-
-### Step 3: Parallel Validation (Week 3)
-
-1. Implement `ConflictGraph` - build from transactions, find independent sets
-2. Add worker thread pool to `BatchValidator`
-3. Partition batch using conflict graph
-4. Validate partitions in parallel
-5. **Goal**: Parallel validation working, throughput improvement measurable
-
-### Step 4: Early Abort Detection (Week 4-5)
-
-1. Implement `EarlyAbortDetector` - track reads/writes
-2. Update `TxnOCCEnhanced` - register accesses, check abort status
-3. Hook into commit to notify detector
-4. **Goal**: Early abort working, reduced wasted work
-
-### Step 5: Testing & Optimization (Week 6-8)
-
-1. Write unit tests for each component
-2. Run TPC-C benchmarks, compare with baseline
-3. Profile and optimize hot paths
-4. Tune parameters (batch size, timeout, check interval)
-5. **Goal**: Performance targets met, all tests passing
-
----
-
-## Configuration
-
-### config/occ_enhanced.yml (Both Features)
-
-```yaml
-mode: occ_enhanced
-
-batch_validation:
-  enabled: true
-  batch_size: 32 # Max transactions per batch
-  batch_timeout_us: 100 # Wait up to 100μs for batch
-  num_workers: 8 # Parallel validation threads
-
-early_abort:
-  enabled: true
-  check_interval: 10 # Check for abort every 10 operations
-  bloom_filter_size: 10000 # Bits for bloom filter
-```
-
-### config/occ_enhanced_batch_only.yml (Ablation Test)
-
-```yaml
-mode: occ_enhanced
-batch_validation:
-  enabled: true
-  batch_size: 32
-  num_workers: 8
-early_abort:
-  enabled: false # Disable to test batching alone
-```
-
----
-
-## Testing Strategy
-
-### Unit Tests
-
-- `test_batch_validation.cc` - Queue, batching, correctness
-- `test_early_abort.cc` - Conflict detection, abort notification
-- `test_conflict_graph.cc` - Graph algorithms, independent sets
-
-### Benchmark Scripts
-
-- `occ_comparison.py` - Run same workload with baseline and enhanced, compare metrics
-- `contention_test.py` - Vary contention (TPC-C warehouses), measure performance
-- `plot_results.py` - Generate graphs
-
-### Metrics to Track
-
-- **Throughput**: Transactions per second
-- **Abort Rate**: % of transactions aborted
-- **Latency**: P50, P95, P99
-- **Wasted Work**: Operations executed in aborted transactions
-- **Batch Size**: Average transactions per batch
-
----
-
-## Success Criteria
-
-**Correctness**:
-
-- ✅ All tests pass
-- ✅ Same results as baseline OCC on deterministic workloads
-- ✅ No deadlocks or crashes in stress tests
-
-**Performance**:
-
-- ✅ 40-60% abort rate reduction on TPC-C with 1-2 warehouses
-- ✅ 2-5× throughput improvement on high contention
-- ✅ <10% overhead on low contention (8+ warehouses)
-
-**Code Quality**:
-
-- ✅ Clean, well-commented code
-- ✅ Follows project conventions
-- ✅ Easy to configure and use
-
----
-
-## Key Design Decisions
-
-### Why Extend Instead of Modify?
-
-- Keep baseline OCC working for comparison
-- Safe fallback if issues arise
-- Easy A/B testing
-
-### Why Both Layers (deptran + memdb)?
-
-- deptran: Distributed protocol coordination
-- memdb: Single-node transaction execution
-- Both need enhancements for full benefit
-
-### Why Batch + Early Abort Together?
-
-- **Batching**: Improves throughput via parallelism
-- **Early Abort**: Reduces wasted work
-- **Combined**: Multiplicative effect (batch more, waste less)
-
----
-
-## Next Steps After Implementation
-
-### Phase 1: Evaluation
-
-1. Run comprehensive benchmarks
-2. Write evaluation report
-3. Tune parameters for different workloads
-
-### Phase 2: Future Enhancements
-
-- Adaptive batching (dynamic batch size)
-- MOCC-style selective pessimistic locking for hotspots
-- Read-only transaction fast path
-- ML-based conflict prediction
-
----
-
-## Quick Reference
-
-### Main Classes to Implement
-
-1. `SchedulerOccEnhanced` - Batch validation coordinator
-2. `TxOccEnhanced` - Transaction with early abort
-3. `ValidationQueue` - Thread-safe transaction queue
-4. `BatchValidator` - Batch processing + parallel validation
-5. `EarlyAbortDetector` - Runtime conflict detection
-6. `ConflictGraph` - Dependency analysis
-7. `TxnOCCEnhanced` - Single-node transaction with early abort
-8. `VersionedRowEnhanced` - Enhanced row structure
-
-### Key Algorithms
-
-- **Batch Collection**: Size threshold OR timeout
-- **Conflict Graph**: Adjacency list from read/write sets
-- **Independent Sets**: Graph coloring (greedy)
-- **Commit Order**: Topological sort
-- **Early Abort**: Track reads → notify on version change → mark conflicting txs
-
-### Integration Points
-
-- `src/deptran/frame.cc` - Register factories
-- `src/deptran/constants.h` - Add mode constant
-- `CMakeLists.txt` - Add new source files
-
----
-
-## Summary
-
-This plan provides a clear path to implementing enhanced OCC with:
-
-- **Parallel batch validation** for throughput
-- **Early abort detection** for efficiency
-- **~20 new files** organized logically
-- **Phased implementation** over 6-8 weeks
-- **Clear success metrics** to validate improvements
-
-Start with the file structure and skeleton classes, then build up functionality incrementally. Test after each phase to ensure correctness.
-
----
-
-## Implementation Status (Updated 2025-12-12)
-
-### ✅ COMPLETE: All 4 Implementation Steps (Code Complete)
-
-**Step 1: Set Up Structure** ✅
-**Step 2: Basic Batching** ✅
-**Step 3: Parallel Validation** ✅
-**Step 4: Early Abort Detection** ✅
-
-**Build Status**: ✅ SUCCESS - All code compiles
-
----
-
-## 🚨 CRITICAL DISCOVERY: Architecture Mismatch
-
-### The Problem
-
-Both optimizations were designed for **multi-threaded** systems, but this codebase uses **coroutines**.
-
-| Feature | With Coroutines | With Multi-threading |
-|---------|-----------------|---------------------|
-| **Parallel Validation** | ❌ Batches always size 1 | ✅ True concurrent arrivals |
-| **Early Abort** | ❌ Cascade aborts | ✅ Detects real conflicts |
-
-### Root Cause
-
-1. **Coroutine `future.get()` blocks** - Only 1 transaction in validation queue at a time
-2. **Coroutine yields create artificial conflicts** - All concurrent TXs interleave on single thread
-3. **One commit aborts all others** - When TX1 commits, ALL reading same keys abort
-
-### Solution: Revised Phased Approach
-
-See **Revised Implementation Plan** section below.
-
----
-
-## Revised Implementation Plan (Dec 2025)
-
-### Phase 1: Thread-Safety Foundation ✅ COMPLETE
-
-Make row operations thread-safe for future multi-threading:
-
-| Component | Status | Change |
-|-----------|--------|--------|
-| `RWLock` | ✅ Done | Added `std::mutex` protection |
-| `VersionedRow::ver_` | ✅ Done | Changed to `std::atomic<version_t>` |
-| Parallel Validation Code | ✅ Done | Verified working (limited by coroutines) |
-| Early Abort Code | ✅ Done | Verified working (cascade aborts) |
-
-**Test Result:** 2,725 TPS (vs baseline 2,831) - minimal mutex overhead
-
-### Phase 2: Execution Threading 🔄 NEXT
-
-Replace coroutine-based execution with thread pool:
-
-| Task | Files | Description |
-|------|-------|-------------|
-| Thread pool for TX execution | `server_worker.cc` | Replace coroutine dispatch |
-| Remove blocking yields | `rrr/coroutine/` | Bypass `Coroutine::Sleep()` |
-| Re-enable batch validation | `scheduler_enhanced.cc` | Uncomment batch validator |
-
-**Expected Benefit:** 15-30% throughput improvement
-
-### Phase 3: Optimization & Benchmarking
-
-1. Tune batch parameters (size, timeout, threshold)
-2. Run comprehensive benchmarks
-3. Compare with baseline OCC
-4. Document findings
-
----
-
-## Current Configuration (Until Phase 2)
-
-```yaml
-batch_validation:
-  enabled: false  # Disabled - adds overhead without benefit
-
-early_abort:
-  enabled: true   # Enabled but limited by coroutines
-```
-
-**Rationale:** Batch validation adds promise/future overhead but batches are always size 1 due to coroutine blocking. Early abort is enabled but causes cascade aborts.
-
----
-
-## Important Discovery: Two Independent Implementations
-
-During integration, we discovered two team members independently implemented the Enhanced OCC system with fundamentally different approaches:
-
-**Conway's Implementation (Current Main Branch):**
-
-- Namespace: `janus::`
-- Strategy: Tightly integrated with existing framework
-- Performance: 256-shard ConcurrentMap for high concurrency
-- Types: Uses framework types (`Row*`, `mdb::colid_t`)
-- Size: More comprehensive (+1,695 lines)
-
-**Aditya's Implementation (working-dev-branch):**
-
-- Namespace: `deptran::`
-- Strategy: Modular, standalone design
-- Performance: Single `std::shared_mutex` (simpler)
-- Types: Simple types (`key_t`, `txn_id_t`)
-- Size: More concise (-705 net lines)
-- Features: Cycle detection, multiple abort strategies
-
-**Decision**: Keep Conway's implementation (already integrated, better performance)
-**Action**: Document Aditya's unique features for future consideration
-
----
-
-## Next Steps After Implementation
-
-### Phase 1: Testing (Current Priority)
-
-1. **Write Tests Compatible with janus:: Implementation**
-   - Test ConflictGraph functionality
-   - Test EarlyAbortDetector behavior
-   - Test ValidationQueue thread safety
-   - Aditya's tests serve as reference
-
-2. **Integration Testing**
-   - Run with config/occ_integration_quick.yml
-   - Run with config/occ_integration_full.yml
-   - Compare results with baseline OCC
-   - Verify correctness
-
-3. **Unit Testing**
-   - Test individual components
-   - Test edge cases (empty batches, single transaction, max batch size)
-   - Test error handling
-
-### Phase 2: Configuration
-
-1. Create comprehensive config files:
-   - `config/occ_enhanced.yml` - Both features enabled
-   - `config/occ_enhanced_batch_only.yml` - Just batching
-   - `config/occ_enhanced_early_abort_only.yml` - Just early abort
-
-2. Tune parameters:
-   - `batch_size` - Optimal batch size for different workloads
-   - `batch_timeout_us` - Balance between latency and batching
-   - `num_workers` - Match to available CPU cores
-   - `check_interval` - Balance between overhead and responsiveness
-
-### Phase 3: Evaluation (Week 6-8)
-
-1. **Benchmarking**
-   - Run TPC-C with varying contention (1-16 warehouses)
-   - Measure throughput (transactions per second)
-   - Measure abort rates (%)
-   - Measure latency (P50, P95, P99)
-   - Measure wasted work (operations in aborted transactions)
-
-2. **Comparison**
-   - Baseline OCC vs Enhanced OCC
-   - Batch-only vs Early-abort-only vs Combined
-   - Different parameter settings
-
-3. **Documentation**
-   - Write evaluation report
-   - Document findings
-   - Create performance graphs
-
----
-
-## Future Enhancements (Potential Features from Aditya's Implementation)
-
-Features worth considering for integration:
-
-1. **Cycle Detection in ConflictGraph**
-   - Add explicit `has_cycle()` method
-   - Useful for deadlock detection
-   - Can complement existing dependency analysis
-
-2. **Multiple Early Abort Strategies**
-   - Current: Version-based detection
-   - Add: Cycle detection strategy
-   - Add: Excessive conflict threshold
-   - Allow configurable strategy selection
-
-3. **Bloom Filter Optimizations**
-   - Consider C++20 `<bit>` header usage
-   - Evaluate performance impact
-   - May require C++20 compiler support
-
-4. **Modular Testing Framework**
-   - Aditya's standalone design easier to unit test
-   - Consider extracting core algorithms for isolated testing
-   - Keep integration tests with framework
-
----
-
-## Summary
-
-This plan provided a clear path to implementing enhanced OCC with:
-
-- ✅ **Parallel batch validation** code complete (needs threading to work)
-- ✅ **Early abort detection** code complete (needs threading to work)
-- ✅ **~20 new files** organized logically
-- ✅ **Thread-safety foundation** complete (Phase 1)
-- 🚨 **Critical discovery**: Coroutine architecture incompatible
-- 🔄 **Revised approach**: Phase 2 execution threading required
-
-**Status**: Phase 1 complete, Phase 2 (execution threading) is next priority.
-
----
-
-## Current Focus: Phase 2 Execution Threading
-
-### Why Threading is Required
-
-Both optimizations need true parallel execution:
-
-| Without Threading | With Threading |
-|-------------------|----------------|
-| Batches size 1 | Batches size N |
-| Cascade aborts | Real conflict detection |
-| Workers idle | Workers utilized |
-| No improvement | 15-30% improvement |
-
-### Phase 2 Tasks
-
-1. **Analyze coroutine usage** in `server_worker.cc`
-2. **Design thread pool** for transaction execution
-3. **Replace or bypass** `Coroutine::Sleep()` yields
-4. **Re-enable batch validation** once threading works
-5. **Benchmark and optimize**
-
-### Key Files for Phase 2
-
-- `src/deptran/server_worker.cc` - Transaction dispatch
-- `src/rrr/coroutine/` - Coroutine implementation
-- `src/deptran/occ/scheduler_enhanced.cc` - Re-enable batch validator
-
-### Success Criteria
-
-- [x] Transactions run on separate threads
-- [x] Batch sizes > 1 in logs
-- [x] Early abort reduces abort rate (at high contention)
-- [ ] >15% throughput improvement (partial - early abort only)
-
-See `doc/threading.md` for detailed Phase 2 plan.
-
----
-
-## Phase 2: Execution Threading ✅ COMPLETE (2025-12-13)
-
-### What Was Implemented
-
-Added `TxExecutor` thread pool for transaction execution:
-
-| Component | File | Description |
-|-----------|------|-------------|
-| `TxExecutor` | `src/deptran/occ/tx_executor.h/cc` | Thread pool with 8 workers |
-| Config options | `src/deptran/config.h/cc` | `execution_threading.enabled`, `num_workers` |
-| Service integration | `src/deptran/service.cc` | Submit Dispatch to thread pool |
-| Dual-mode signaling | `batch_metadata.h`, `batch_validator.cc` | Promise for threads, BoxEvent for coroutines |
-| DoPrepare changes | `scheduler_enhanced.cc` | Promise-based waiting in threaded mode |
-
-### Key Design Decisions
-
-1. **Thread pool pattern**: Reused BatchValidator's pattern (queue + mutex + condition_variable)
-2. **Dual-mode signaling**: `std::promise<bool>` for threaded mode, `BoxEvent<bool>` for coroutine mode
-3. **Dispatch-only threading**: Only Dispatch RPC uses thread pool; Prepare/Commit stay on reactor
-
----
-
-## Phase 3 Benchmark Results (2025-12-13)
-
-### TPC-C Results - HIGH CONTENTION SUCCESS!
-
-TPC-C with 1 warehouse is the canonical high-contention benchmark:
-
-| Configuration | Attempted | Aborted | Abort Rate | TPS | Change |
-|---------------|-----------|---------|------------|-----|--------|
-| **Baseline OCC** | 20,667 | 16,816 | **81.37%** | 385 | - |
-| **Enhanced (early abort)** | 13,685 | 4,675 | **34.16%** | 901 | **+134%** |
-
-**Key Finding**: Early abort detection **WORKS EXCELLENTLY** with TPC-C!
-- Abort rate reduced from **81% to 34%** (~58% reduction)
-- Throughput improved by **134%** (385 → 901 TPS)
-- Early aborts detected: 12,707
-
-**Note**: TPC-C requires coroutine mode (no execution threading) due to `TxWorkspace::WaitAt()`.
-
-### High-Contention RW Results (50 keys, 80% writes)
-
-| Configuration | Attempted | Aborted | Abort Rate | TPS | Change |
-|---------------|-----------|---------|------------|-----|--------|
-| **Baseline OCC** | 124,627 | 17,582 | **14.11%** | 10,704 | - |
-| **Enhanced (early abort)** | 111,633 | 15,645 | **14.01%** | 9,598 | -10% |
-
-**Finding**: Early abort adds overhead without benefit at 14% abort rate. Only effective at >30% abort.
-
-### Original RW Results (Low Contention)
-
-Tested across 6 contention levels (500 - 20,000 keys) with 4 configurations:
-
-| Contention | Population | Baseline | Early Abort | Batch | Both |
-|------------|------------|----------|-------------|-------|------|
-| **Very High** | 500 keys | 10,719 | **12,384 (+15%)** | 5,301 (-51%) | 5,298 (-51%) |
-| **High** | 1,000 keys | 6,373 | 5,296 (-17%) | 3,527 (-45%) | 3,507 (-45%) |
-| **Moderate** | 2,000 keys | 6,465 | 5,364 (-17%) | 3,577 (-45%) | 3,310 (-49%) |
-| **Low** | 5,000 keys | 10,151 | 5,330 (-47%) | 5,270 (-48%) | 3,551 (-65%) |
-| **Very Low** | 10,000 keys | 10,283 | 8,907 (-13%) | 5,204 (-49%) | 5,212 (-49%) |
-| **Very Low** | 20,000 keys | 10,780 | 8,891 (-18%) | 5,125 (-52%) | 0 (error) |
-
-### Abort Rates (Very Low Across All Configs)
-
-| Contention | Baseline | Early Abort | Batch | Both |
-|------------|----------|-------------|-------|------|
-| Very High | 1.13% | 1.09% | 1.15% | 1.18% |
-| High | 0.51% | 0.50% | 0.55% | 0.53% |
-| Moderate | 0.29% | 0.33% | 0.30% | 0.25% |
-| Low | 0.10% | 0.10% | 0.12% | 0.07% |
-| Very Low | 0.05% | 0.06% | 0.06% | 0.06% |
+## Implementation Status
+
+### Completed
+
+| Phase | Component | Status | Result |
+|-------|-----------|--------|--------|
+| 1.1 | Thread-Safety | ✅ Complete | RWLock + atomic versions |
+| 1.2 | Batch Validation | ✅ Complete | **1.96x throughput** |
+| 1.3 | Early Abort Detection | ✅ Complete | 1.22x throughput |
+| 1.4 | Termination Bug Fix | ✅ Complete | Clean shutdown |
+| 2 | Config Optimization | ✅ Complete | batch_size=4 optimal |
+
+**Build Status**: ✅ Compiles successfully
 
 ### Key Findings
 
-1. **Early Abort shines at VERY HIGH contention**
-   - At 500 keys: **+15% improvement** over baseline (12,384 vs 10,719 TPS)
-   - This is where early abort saves wasted work on doomed transactions
-   - At lower contention, the overhead outweighs benefits
-
-2. **Batch validation adds ~50% overhead at ALL contention levels**
-   - Thread pool submission + promise/future signaling is expensive
-   - Batch sizes are still small (mostly 1-4) due to single RPC thread
-   - The parallel validation benefit doesn't offset the overhead
-
-3. **Abort rates are very low** (0.03% - 1.18%)
-   - The retry mechanism (retry: 20) handles most aborts
-   - Low abort rates mean early abort has limited impact at low contention
-
-4. **Hypothesis partially confirmed**
-   - Early abort works best at **high contention** (saves wasted work)
-   - Batch validation doesn't benefit at any contention level yet
-
----
-
-## Current Status Summary
-
-| Phase | Status | Result |
-|-------|--------|--------|
-| Phase 1: Thread-Safety | ✅ Complete | RWLock + atomic versions |
-| Phase 2: Execution Threading | ✅ Complete | TxExecutor with 8 workers |
-| Phase 3: TPC-C Testing | ✅ Complete | **+134% TPS, 58% fewer aborts** |
-| Phase 3: Early Abort Validation | ✅ **SUCCESS** | Works at >30% abort rate |
-| Phase 3: Batch Validation | ⚠️ Needs work | -50% overhead (optimization pending) |
-
----
-
-## Phase 3: Batch Validation Optimization 🔄 NEXT PRIORITY
-
-### The Problem
-
-Batch validation adds ~50% overhead due to:
-1. Thread pool submission cost (queue + mutex + condition_variable)
-2. Promise/future signaling overhead
-3. Small batch sizes (1-4 transactions) don't amortize overhead
-
-### Potential Solutions
-
-| Approach | Description | Expected Benefit |
-|----------|-------------|------------------|
-| **Lock-free queue** | Replace mutex-protected queue with lock-free | 10-20% overhead reduction |
-| **Batch timeout tuning** | Increase `batch_timeout_us` to collect larger batches | Better amortization |
-| **Direct validation path** | Skip queue for single transactions | Avoid overhead when no batching |
-| **Inline small batches** | Don't use thread pool for batch_size < threshold | Reduce thread sync cost |
-
-### Files to Modify
-
-- `src/deptran/occ/validation_queue.cc` - Lock-free queue
-- `src/deptran/occ/batch_validator.cc` - Skip queue for singles
-- `src/deptran/occ/scheduler_enhanced.cc` - Direct validation path
-- `config/occ_enhanced_threaded.yml` - Tune parameters
-
-### Success Criteria
-
-- [ ] Batch validation overhead < 10% vs baseline
-- [ ] Throughput improvement at low contention
-- [ ] Maintain early abort benefit at high contention
+1. **Batch Validation is the winner** - 1.96x throughput with batch_size=4
+2. **Smaller batch sizes are better** - Less waiting time in queue
+3. **Early Abort interferes** - Row-level tracking causes unnecessary aborts
+4. **Serial validation is key** - Prevents lock contention
 
 ---
 
 ## Recommended Configuration
 
-Based on TPC-C and RW benchmark results:
-
 ```yaml
-# For TPC-C or HIGH contention (>30% abort rate):
-execution_threading:
-  enabled: false  # TPC-C uses WaitAt() - requires coroutines
+# TPC-C with batch validation (BEST)
+mode:
+  cc: occ_enhanced
 
 batch_validation:
-  enabled: false  # Overhead too high
+  enabled: true
+  batch_size: 4           # Optimal - smaller is better!
+  batch_timeout_us: 100
+  num_workers: 8
+  parallel_threshold: 4
 
 early_abort:
-  enabled: true   # MAJOR BENEFIT: 81% → 34% abort rate, +134% TPS
-
-# For RW benchmark (simple key-value):
-# - High contention (50 keys): early_abort helps slightly
-# - Low contention (>500 keys): use baseline OCC
+  enabled: false          # Interferes with batch validation
 ```
 
-## Key Conclusions
+---
 
-1. **Early abort detection WORKS** - but only at high contention (>30% abort rate)
-   - TPC-C: 81% → 34% abort rate, +134% throughput
-   - RW benchmark too low-contention to show benefit
+## File Structure
 
-2. **Execution threading incompatible with TPC-C**
-   - TPC-C stored procedures use `TxWorkspace::WaitAt()`
-   - This requires reactor thread, not worker threads
-   - Solution: Use coroutine mode for TPC-C
+```
+src/deptran/occ/
+├── scheduler_enhanced.h/cc   # Main coordinator with ValidationLoop
+├── tx_enhanced.h/cc          # Transaction with batch metadata
+├── coordinator_enhanced.h    # Creates enhanced transactions
+├── validation_queue.h/cc     # Thread-safe transaction queue
+├── batch_validator.h/cc      # Batch processing (serial validation)
+├── early_abort_detector.h/cc # Conflict detection (optional)
+├── conflict_graph.h/cc       # Dependency analysis (rarely used)
+├── bloom_filter.h            # Fast conflict pre-filtering
+├── concurrent_map.h          # Thread-safe hash map
+└── batch_metadata.h          # Structs for batch tracking
+```
 
-3. **Batch validation needs optimization**
-   - Currently -50% overhead at all contention levels
-   - Small batch sizes don't amortize the queue/promise overhead
-   - Next step: Direct validation path for single transactions
+---
+
+## Core Components
+
+### ValidationQueue
+
+Thread-safe queue for transactions awaiting validation:
+- `Enqueue(tx)` - Add transaction, set BoxEvent for waiting
+- `DequeueBatch(size, timeout)` - Get batch when ready
+- Coroutine yields via `BoxEvent::Wait()`
+
+### BatchValidator
+
+Coordinates batch processing:
+- Validates transactions serially (not parallel!)
+- Signals completion via `BoxEvent::Set()`
+- Worker threads exist but rarely activate
+
+### EarlyAbortDetector (Optional)
+
+Tracks active reads/writes:
+- `RegisterRead(tx_id, row, col, version)` - Record read
+- `NotifyVersionChange(row, col, new_version)` - Mark conflicting txs
+- **Note**: Can interfere with batch validation
+
+---
+
+## Benchmark Results
+
+### TPC-C (1 Warehouse - High Contention)
+
+**5-Run Averages:**
+
+| Configuration | Avg TPS | vs Baseline | Abort Rate |
+|---------------|---------|-------------|------------|
+| Baseline OCC | 489 | 1.0x | 59.3% |
+| Early Abort Only | 595 | 1.22x | 34.2% |
+| Batch (size=32) | 865 | 1.77x | 18.4% |
+| **Batch (size=4)** | **958** | **1.96x** | **19%** |
+
+### Batch Size Comparison
+
+| batch_size | TPS | vs size=32 |
+|------------|-----|------------|
+| 2 | 977 | +13% |
+| **4** | **958** | **+11%** |
+| 8 | 945 | +9% |
+| 16 | 681 | -21% |
+| 32 | 865 | baseline |
+
+**Conclusion**: Smaller batch sizes perform better (less waiting time).
 
 ---
 
 ## Test Commands
 
-### TPC-C Benchmark (Recommended - High Contention)
+### TPC-C Benchmark
 
 ```bash
 cd build
 
-# TPC-C Baseline OCC (expect ~80% abort rate, ~385 TPS)
+# Baseline OCC
 ./labtest -f ../config/tpcc_occ_baseline.yml -d 10
 
-# TPC-C Enhanced OCC with Early Abort (expect ~34% abort rate, ~900 TPS)
+# Batch Validation (RECOMMENDED)
+./labtest -f ../config/tpcc_occ_batch_only.yml -d 10
+
+# Early Abort Only
 ./labtest -f ../config/tpcc_occ_enhanced.yml -d 10
 ```
 
-### RW Benchmark (Low-Medium Contention)
+### Run Multiple Tests
 
 ```bash
-cd build
-
-# High-contention RW baseline (50 keys, 80% writes)
-./labtest -f ../config/occ_high_contention.yml -d 10
-
-# High-contention RW enhanced (early abort enabled)
-./labtest -f ../config/occ_high_contention_enhanced.yml -d 10
-
-# Comprehensive contention sweep (all population sizes)
-bash ../scripts/contention_test.sh
+for i in {1..5}; do
+  echo "=== Run $i ==="
+  ./labtest -f ../config/tpcc_occ_batch_only.yml -d 10 2>&1 | grep -E "Total:|TPS"
+done
 ```
 
-### Available Config Files
+---
 
-| Config | Workload | Expected Abort Rate | Description |
-|--------|----------|---------------------|-------------|
-| `tpcc_occ_baseline.yml` | TPC-C | ~81% | Baseline OCC, 1 warehouse |
-| `tpcc_occ_enhanced.yml` | TPC-C | ~34% | Early abort enabled |
-| `occ_high_contention.yml` | RW | ~14% | 50 keys, 80% writes |
-| `occ_high_contention_enhanced.yml` | RW | ~14% | Early abort enabled |
+## Configuration Files
 
-### Results Location
+| Config | Description | Recommended |
+|--------|-------------|-------------|
+| `tpcc_occ_baseline.yml` | Baseline OCC | For comparison |
+| `tpcc_occ_batch_only.yml` | Batch validation only | **YES** |
+| `tpcc_occ_enhanced.yml` | Early abort only | No |
+| `tpcc_occ_enhanced_batch.yml` | Both features | No (interference) |
 
-Results are exported to CSV in `build/`:
+---
+
+## Technical Details
+
+### Why Parallel Workers Don't Help
+
+The code has parallel validation workers, but they rarely activate:
+
+```cpp
+// batch_validator.cc
+if (batch.size() >= parallel_threshold && num_workers_ > 0) {
+  ValidateBatchParallel(batch, result);  // Rarely used
+} else {
+  ValidateBatchSerial(batch, result);     // Usually this path
+}
 ```
-build/results_YYYYMMDD_HHMMSS.csv
-```
 
-CSV columns: timestamp, mode, duration, attempted, committed, aborted, abort_rate, tps, early_aborts
+With `parallel_threshold=4` and typical batch sizes of 1-4, most batches use serial validation.
+
+### Why Early Abort Interferes
+
+Early abort tracks reads at ROW level, not column level:
+- When TX1 commits, marks ALL transactions reading same row
+- TX2 might read DIFFERENT district on same table
+- Results in unnecessary aborts
+
+---
+
+## Success Criteria
+
+- [x] Throughput improvement > 50% (achieved ~96%)
+- [x] Abort rate reduction > 50% (achieved ~68% reduction: 59% → 19%)
+- [x] Optimal batch_size identified (4)
+- [x] Clean shutdown without hangs
+- [x] Results documented with CSV exports
+
+---
+
+## Future Enhancements (Not Pursued)
+
+These were investigated but didn't improve performance:
+
+| Approach | Result | Reason |
+|----------|--------|--------|
+| Yield-only validation | 0.66x | Lock contention without serial validation |
+| Config tuning (1000us timeout) | 0.75x | Added latency |
+| Larger batch sizes | Worse | More waiting time |
+| Parallel workers | No effect | Batch sizes too small |
+
+---
+
+## Summary
+
+**What Works**:
+- Batch validation with queue-based yielding
+- Small batch sizes (4)
+- Serial validation in ValidationLoop
+
+**What Doesn't Work**:
+- Parallel validation workers (batch sizes too small)
+- Early abort with batch validation (interference)
+- Larger batch sizes or timeouts
+
+**Final Achievement**: **~2x throughput improvement** with batch_size=4 on TPC-C benchmark.
