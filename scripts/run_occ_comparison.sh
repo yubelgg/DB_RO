@@ -28,12 +28,12 @@ CONFIGS=(
   "tpcc_occ_batch_only.yml:batch"
 )
 
-# Default duration
-DURATION=${1:-10}
+# Default duration (30s recommended for stable results)
+DURATION=${1:-30}
 
-# Timeout: proportional to duration (2x duration + 30s buffer for setup/teardown)
+# Timeout: proportional to duration (3x duration + 30s buffer for setup/teardown)
 # Can be overridden with second argument
-DEFAULT_TIMEOUT=$((DURATION * 2 + 30))
+DEFAULT_TIMEOUT=$((DURATION * 3 + 30))
 TIMEOUT=${2:-$DEFAULT_TIMEOUT}
 
 # Find project root (directory containing scripts/)
@@ -91,20 +91,30 @@ for i in "${!CONFIGS[@]}"; do
   name="${config_pair##*:}"
   test_num=$((i + 1))
 
-  echo -ne "${BLUE}[${test_num}/${#CONFIGS[@]}]${NC} Running ${YELLOW}${name}${NC}... "
-
-  # Run with timeout, suppress all output
-  START_TIME=$(date +%s)
-
   # Count CSVs before run
   CSV_BEFORE=$(ls results_*.csv 2>/dev/null | wc -l)
 
-  # Run in subshell and capture exit code (suppresses shell's "Aborted" message)
-  EXIT_CODE=0
-  { timeout "${TIMEOUT}" ./labtest -f "${CONFIG_DIR}/${config}" -d "${DURATION}" > /dev/null 2>&1; EXIT_CODE=$?; } 2>/dev/null || EXIT_CODE=$?
+  # Run in background with timeout (in subshell to suppress crash messages)
+  START_TIME=$(date +%s)
+  (timeout "${TIMEOUT}" ./labtest -f "${CONFIG_DIR}/${config}" -d "${DURATION}" > /dev/null 2>&1) &
+  PID=$!
+
+  # Live stopwatch while running
+  while kill -0 $PID 2>/dev/null; do
+    ELAPSED=$(($(date +%s) - START_TIME))
+    printf "\r${BLUE}[${test_num}/${#CONFIGS[@]}]${NC} Running ${YELLOW}${name}${NC}... ${CYAN}${ELAPSED}s${NC} "
+    sleep 1
+  done
+
+  # Get exit code (suppress any remaining messages)
+  wait $PID 2>/dev/null
+  EXIT_CODE=$?
 
   END_TIME=$(date +%s)
   ELAPSED=$((END_TIME - START_TIME))
+
+  # Clear the line for final status
+  printf "\r${BLUE}[${test_num}/${#CONFIGS[@]}]${NC} Running ${YELLOW}${name}${NC}... "
 
   # Count CSVs after run - if new CSV created, test succeeded even with shutdown crash
   CSV_AFTER=$(ls results_*.csv 2>/dev/null | wc -l)
