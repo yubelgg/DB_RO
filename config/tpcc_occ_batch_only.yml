@@ -33,7 +33,7 @@ execution_threading:
 batch_validation:
   enabled: true
   batch_size: 4
-  batch_timeout_us: 0  # 0 = immediate processing (best TPS)
+  batch_timeout_us: 5000  # 5ms timeout for better stability (~90% vs ~50%)
   num_workers: 8
 
 # DISABLE early abort - testing batch validation only

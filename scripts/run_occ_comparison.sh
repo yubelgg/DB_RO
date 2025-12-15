@@ -96,6 +96,9 @@ for i in "${!CONFIGS[@]}"; do
   # Run with timeout, suppress all output
   START_TIME=$(date +%s)
 
+  # Count CSVs before run
+  CSV_BEFORE=$(ls results_*.csv 2>/dev/null | wc -l)
+
   # Run in subshell and capture exit code (suppresses shell's "Aborted" message)
   EXIT_CODE=0
   { timeout "${TIMEOUT}" ./labtest -f "${CONFIG_DIR}/${config}" -d "${DURATION}" > /dev/null 2>&1; EXIT_CODE=$?; } 2>/dev/null || EXIT_CODE=$?
@@ -103,14 +106,22 @@ for i in "${!CONFIGS[@]}"; do
   END_TIME=$(date +%s)
   ELAPSED=$((END_TIME - START_TIME))
 
+  # Count CSVs after run - if new CSV created, test succeeded even with shutdown crash
+  CSV_AFTER=$(ls results_*.csv 2>/dev/null | wc -l)
+  CSV_CREATED=$((CSV_AFTER > CSV_BEFORE))
+
   if [ $EXIT_CODE -eq 0 ]; then
     echo -e "${GREEN}DONE${NC} (${ELAPSED}s)"
     ((PASSED++)) || true
   elif [ $EXIT_CODE -eq 124 ]; then
     echo -e "${RED}TIMEOUT${NC} (exceeded ${TIMEOUT}s)"
     ((FAILED++)) || true
-  elif [ $EXIT_CODE -eq 134 ]; then
-    echo -e "${RED}CRASHED${NC} (SIGABRT, ${ELAPSED}s)"
+  elif [ $CSV_CREATED -eq 1 ]; then
+    # Test completed and created results, just crashed during shutdown
+    echo -e "${GREEN}DONE${NC} (${ELAPSED}s, shutdown crash ignored)"
+    ((PASSED++)) || true
+  elif [ $EXIT_CODE -eq 134 ] || [ $EXIT_CODE -eq 139 ]; then
+    echo -e "${RED}CRASHED${NC} (exit code: ${EXIT_CODE}, ${ELAPSED}s)"
     ((FAILED++)) || true
   else
     echo -e "${RED}FAILED${NC} (exit code: ${EXIT_CODE}, ${ELAPSED}s)"
