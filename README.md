@@ -57,6 +57,8 @@ First build takes ~10 minutes.
 
 **Note**: Higher duration gives more stable/accurate results. Start with 30 seconds for meaningful comparisons.
 
+**Resource Warning**: Longer durations are more CPU and memory intensive. Tests may crash or timeout on resource-constrained machines. If you experience crashes at 30s, try 10-20s instead. Tested on 11th gen i7 with 16GB RAM - 30s duration occasionally crashes due to resource exhaustion.
+
 **Features:**
 - Live stopwatch showing elapsed time
 - Runs baseline, early_abort, and batch tests
