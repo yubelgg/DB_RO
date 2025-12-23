@@ -19,8 +19,13 @@ EarlyAbortDetector::EarlyAbortDetector()
 }
 
 EarlyAbortDetector::~EarlyAbortDetector() {
-  // Stop GC thread (Fix 5)
-  gc_running_ = false;
+  // Stop GC thread (Fix 5) - use condition variable for immediate wakeup
+  {
+    std::lock_guard<std::mutex> lock(gc_mutex_);
+    gc_running_ = false;
+  }
+  gc_cv_.notify_all();  // Wake GC thread immediately (don't wait for sleep to complete)
+
   if (gc_thread_.joinable()) {
     gc_thread_.join();
   }
@@ -209,11 +214,18 @@ void EarlyAbortDetector::RemoveRead(i64 tx_id, const RowColumnKey& key) {
 // GC methods (Fix 5)
 void EarlyAbortDetector::GarbageCollectionLoop() {
   Log_debug("EarlyAbortDetector GC thread started");
-  while (gc_running_) {
-    std::this_thread::sleep_for(gc_interval_);
-    if (gc_running_) {  // Check again after sleep
-      CleanExpiredEntries();
+  while (true) {
+    // Use condition variable wait_for instead of sleep_for
+    // This allows immediate wakeup when destructor signals shutdown
+    {
+      std::unique_lock<std::mutex> lock(gc_mutex_);
+      // Wait for gc_interval OR until gc_running_ becomes false
+      gc_cv_.wait_for(lock, gc_interval_, [this] { return !gc_running_.load(); });
+      if (!gc_running_) {
+        break;  // Exit loop immediately when shutdown is signaled
+      }
     }
+    CleanExpiredEntries();
   }
   Log_debug("EarlyAbortDetector GC thread stopped");
 }

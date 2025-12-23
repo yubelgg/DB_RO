@@ -55,21 +55,19 @@ BatchValidator::ValidateBatch(const std::vector<TxOccEnhanced *> &batch) {
 
   auto start_time = std::chrono::steady_clock::now();
 
-  // Decide validation strategy based on batch size
-  size_t parallel_threshold = static_cast<size_t>(Config::GetConfig()->get_parallel_threshold());
-
-  if (batch.size() >= parallel_threshold && num_workers_ > 0) {
-    // Large batch: use parallel validation with conflict graph
-    Log_info("PARALLEL: batch=%zu >= threshold=%zu, using %d workers",
-             batch.size(), parallel_threshold, num_workers_);
-    ValidateBatchParallel(batch, result);
-  } else {
-    // For now, use serial validation for all batch sizes
-    // Smart ordering can be enabled later when performance is verified
-    Log_info("SERIAL: batch=%zu < threshold=%zu (workers=%d)",
-             batch.size(), parallel_threshold, num_workers_);
-    ValidateBatchSerial(batch, result);
-  }
+  // ALWAYS use serial validation - parallel validation BLOCKS the calling thread
+  // with futures[i].get(), which freezes the reactor and prevents other coroutines
+  // from running. This causes dramatic throughput drops and timeouts.
+  //
+  // Serial validation is safe because:
+  // 1. It signals events immediately after each transaction
+  // 2. It doesn't block the calling thread
+  // 3. In coroutine mode, the batch leader can process serially without blocking
+  //
+  // The parallel validation code is kept for potential future use with
+  // execution threading enabled (where blocking is acceptable).
+  Log_debug("SERIAL: batch=%zu (parallel disabled - blocks reactor)", batch.size());
+  ValidateBatchSerial(batch, result);
 
   auto end_time = std::chrono::steady_clock::now();
   result.total_time = std::chrono::duration_cast<std::chrono::microseconds>(

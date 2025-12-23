@@ -6,6 +6,7 @@
 #include <atomic>
 #include <thread>
 #include <chrono>
+#include <condition_variable>
 #include "../memdb/row.h"
 #include "base/all.hpp"
 
@@ -17,22 +18,28 @@ namespace janus {
 /**
  * RowColumnKey - Identifies a specific column in a specific row
  * Used as key for tracking reads/writes
+ *
+ * IMPORTANT: Uses uintptr_t instead of Row* to avoid dangling pointer issues.
+ * The row address is used as an identity/key only - never dereferenced.
+ * This prevents segfaults during shutdown when Rows may be freed while
+ * entries still exist in the tracking maps.
  */
 struct RowColumnKey {
-  Row* row;
+  uintptr_t row_id;  // Row address as identity (never dereferenced)
   mdb::colid_t column_id;
-  
-  RowColumnKey(Row* r, mdb::colid_t col) : row(r), column_id(col) {}
-  
+
+  RowColumnKey(Row* r, mdb::colid_t col)
+    : row_id(reinterpret_cast<uintptr_t>(r)), column_id(col) {}
+
   bool operator==(const RowColumnKey& other) const {
-    return row == other.row && column_id == other.column_id;
+    return row_id == other.row_id && column_id == other.column_id;
   }
 };
 
 // Hash function for RowColumnKey
 struct RowColumnKeyHash {
   size_t operator()(const RowColumnKey& key) const {
-    return std::hash<void*>()(key.row) ^ std::hash<int>()(key.column_id);
+    return std::hash<uintptr_t>()(key.row_id) ^ std::hash<int>()(key.column_id);
   }
 };
 
@@ -155,6 +162,8 @@ private:
   // Garbage collection thread and settings (Fix 5)
   std::thread gc_thread_;
   std::atomic<bool> gc_running_{false};
+  std::mutex gc_mutex_;                   // Protects gc_cv_
+  std::condition_variable gc_cv_;         // For immediate shutdown wakeup
   static constexpr std::chrono::milliseconds gc_interval_{100};  // Clean every 100ms
   static constexpr std::chrono::milliseconds entry_ttl_{500};    // Entries expire after 500ms
 

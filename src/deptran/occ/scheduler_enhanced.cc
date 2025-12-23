@@ -127,48 +127,52 @@ SchedulerOccEnhanced::~SchedulerOccEnhanced() {
     Log_info("SchedulerOccEnhanced: initiating shutdown...");
 
     // Step 1: Signal shutdown - this prevents new enqueues
-    // DON'T call batch_validator_->SignalShutdown() yet - we still need to signal events
     running_ = false;
 
-    // Step 2: Drain any pending transactions and signal their events as failed
-    // This wakes up waiting coroutines/workers so they can complete
-    while (!validation_queue_.Empty()) {
-      auto batch = validation_queue_.DequeueBatch(batch_size_, std::chrono::microseconds(0));
-      for (auto* tx : batch) {
-        // Phase 2: Signal via promise if set (threaded mode), else BoxEvent (coroutine mode)
-        if (tx->GetBatchMetadata().validation_promise) {
-          tx->GetBatchMetadata().validation_promise->set_value(false);
-          Log_debug("Shutdown: signaled failure via promise for pending tx %" PRIx64, tx->tid_);
-        } else if (tx->GetBatchMetadata().validation_event) {
-          // Signal failure - the transaction will be retried or abort
-          tx->GetBatchMetadata().validation_event->Set(false);
-          Log_debug("Shutdown: signaled failure via event for pending tx %" PRIx64, tx->tid_);
-        }
-      }
+    // Step 2: STOP BATCH VALIDATOR WORKERS FIRST
+    // This ensures no workers are racing with our event signaling below
+    if (batch_validator_) {
+      batch_validator_->SignalShutdown();
+      batch_validator_.reset();  // ~BatchValidator joins worker threads
+      Log_info("SchedulerOccEnhanced: batch validator destroyed");
     }
 
-    // Step 3: Wake up the validation thread if it's waiting on empty queue
-    // Notify the CV so DequeueBatch returns
-    validation_queue_.Clear();
-
-    // Step 4: Wait for validation thread to exit (if using threaded mode, which we're not)
-    // With inline validation, there's no separate thread to join
+    // Step 3: Wait for validation thread to exit (if using threaded mode)
     if (validation_thread_.joinable()) {
       validation_thread_.join();
       Log_info("SchedulerOccEnhanced: validation thread stopped");
     }
 
-    // Step 5: Now signal shutdown to batch validator workers
-    if (batch_validator_) {
-      batch_validator_->SignalShutdown();
-    }
-  }
+    // Step 4: NOW drain pending transactions and signal their events as failed
+    // Workers are stopped, so no race conditions here
+    while (!validation_queue_.Empty()) {
+      auto batch = validation_queue_.DequeueBatch(batch_size_, std::chrono::microseconds(0));
+      for (auto* tx : batch) {
+        // Skip null entries (defensive check)
+        if (!tx) continue;
 
-  // Destroy batch_validator explicitly before any other cleanup
-  // to ensure worker threads are stopped before we continue
-  if (batch_validator_) {
-    batch_validator_.reset();
-    Log_info("SchedulerOccEnhanced: batch validator destroyed");
+        // Signal via promise if set (threaded mode), else BoxEvent (coroutine mode)
+        auto& metadata = tx->GetBatchMetadata();
+        if (metadata.validation_promise) {
+          metadata.validation_promise->set_value(false);
+          metadata.validation_promise.reset();  // Prevent double-signal
+          Log_debug("Shutdown: signaled failure via promise for pending tx %" PRIx64, tx->tid_);
+        } else if (metadata.validation_event) {
+          metadata.validation_event->Set(false);
+          metadata.validation_event.reset();  // Prevent double-signal
+          Log_debug("Shutdown: signaled failure via event for pending tx %" PRIx64, tx->tid_);
+        }
+      }
+    }
+
+    // Step 5: Clear the queue entirely
+    validation_queue_.Clear();
+  } else {
+    // Even if not running, still clean up batch_validator
+    if (batch_validator_) {
+      batch_validator_.reset();
+      Log_info("SchedulerOccEnhanced: batch validator destroyed");
+    }
   }
 
   // Shutdown TxExecutor (Phase 2)

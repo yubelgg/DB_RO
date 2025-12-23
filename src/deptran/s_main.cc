@@ -179,16 +179,16 @@ int main(int argc, char *argv[]) {
 #endif // ifdef CPU_PROFILE
   Log_info("all server workers have shut down.");
 
-  // TODO, FIXME pending_future in rpc cause error.
-  fflush(stderr);
-  fflush(stdout);
-  return 0;
+  // CRITICAL: Explicitly clear global vectors BEFORE static destruction
+  // This prevents crashes from vtable access after Frame is destroyed
   client_shutdown();
   server_shutdown();
 
   RandomGenerator::destroy();
   Config::DestroyConfig();
 
+  fflush(stderr);
+  fflush(stdout);
   Log_debug("exit process.");
 
   return 0;
