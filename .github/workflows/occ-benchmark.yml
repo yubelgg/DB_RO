@@ -1,0 +1,32 @@
+name: OCC Benchmark Comparison
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Benchmark duration per config (seconds)'
+        required: false
+        default: '120'
+
+jobs:
+  occ-benchmark:
+    runs-on: [self-hosted, linux, db-ro-occ-runner]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build
+        run: make
+        timeout-minutes: 40
+
+      - name: Run OCC benchmark
+        run: ./scripts/run_occ_comparison.sh ${{ github.event.inputs.duration }}
+
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: occ-results
+          path: build/results_*.csv
+          retention-days: 30
+
+      - name: Analyze results
+        run: ./scripts/analyze_occ_results.sh
